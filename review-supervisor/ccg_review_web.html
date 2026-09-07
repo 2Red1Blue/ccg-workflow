@@ -8,10 +8,15 @@
 <body>
   <header class="masthead"><a href="/" class="brand">ccg<span> / review center</span></a><span class="connection" id="connection" role="status">连接中</span></header>
   <main>
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy"><p class="eyebrow">DUAL SIGNAL / LOCAL OBSERVATORY</p><h1 id="hero-title">每一次判断，<br><em>都留下证据。</em></h1><p class="hero-lede">CCG 双模型审查中心</p><p class="hero-body">Codex 与 Claude Code 并行观察代码变化。把分歧、超时和最终决定，收进同一条可回看的时间线。</p><div class="hero-meta"><button type="button" data-filter="all">01 / TRACE</button><button type="button" data-filter="changes">02 / REVIEW</button><button type="button" data-filter="approved">03 / DECIDE</button></div></div>
+      <button type="button" class="hero-art" id="poster-toggle" aria-pressed="false" aria-label="切换海报聚焦模式"><img src="/poster.webp" alt="紫蓝霓虹中的赛博朋克审查中心主视觉"><span class="hero-tag">LIVE<br>LOCAL</span><span class="hero-hint">CLICK TO FOCUS</span></button>
+      <div class="hero-grid" aria-hidden="true"></div>
+    </section>
     <section class="intro"><div><p class="eyebrow">LOCAL OBSERVATORY / 01</p><h1>让每次审查，都有迹可循。</h1><p class="subtitle">两个视角，一份可追溯的记录。查看执行过程，回到具体结论。</p></div><button id="refresh" class="refresh">刷新记录 ↻</button></section>
     <div id="error" role="alert" hidden></div>
     <section class="stats" aria-label="审查概况">
-      <div><span>保留记录</span><strong id="total">—</strong></div><div><span>正在执行</span><strong id="running">—</strong></div><div><span>需要修改</span><strong id="changes">—</strong></div><div><span>结果未齐</span><strong id="incomplete">—</strong></div>
+      <button type="button" data-filter="all"><span>保留记录</span><strong id="total">—</strong></button><button type="button" data-filter="running"><span>正在执行</span><strong id="running">—</strong></button><button type="button" data-filter="changes"><span>需要修改</span><strong id="changes">—</strong></button><button type="button" data-filter="incomplete"><span>结果未齐</span><strong id="incomplete">—</strong></button>
     </section>
     <div class="workspace">
       <aside class="history"><div class="section-title"><h2>审查历史</h2><span id="count"></span></div>

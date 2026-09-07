@@ -13,6 +13,7 @@ const FILES = [
   { source: 'ccg_review_web.html', target: 'ccg_review_web.html', mode: 0o600 },
   { source: 'ccg_review_web.js', target: 'ccg_review_web.js', mode: 0o600 },
   { source: 'ccg_review_web.css', target: 'ccg_review_web.css', mode: 0o600 },
+  { source: 'assets/ccg-review-center-poster.webp', target: 'ccg_review_center_poster.webp', mode: 0o600 },
 ] as const
 
 interface Manifest {

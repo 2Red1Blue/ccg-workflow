@@ -20,7 +20,19 @@ RUN_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 ASSETS = {"/": ("ccg_review_web.html", "text/html"),
           "/app.js": ("ccg_review_web.js", "text/javascript"),
-          "/style.css": ("ccg_review_web.css", "text/css")}
+          "/style.css": ("ccg_review_web.css", "text/css"),
+          "/poster.webp": ("ccg_review_center_poster.webp", "image/webp")}
+
+
+def asset_path(filename: str) -> Path:
+    installed = Path(__file__).with_name(filename)
+    if installed.is_file():
+        return installed
+    source_name = "ccg-review-center-poster.webp" if filename == "ccg_review_center_poster.webp" else filename
+    source_asset = Path(__file__).with_name("assets") / source_name
+    if source_asset.is_file():
+        return source_asset
+    raise FileNotFoundError(filename)
 
 
 def read_file(directory: int, name: str, limit: int = 512 * 1024) -> str | None:
@@ -128,7 +140,7 @@ class History:
                     row["partial"] = not report and bool(partial)
                 result["backends"][name] = row
             rows = list(result["backends"].values())
-            if any(r["verdict"] == "REQUEST_CHANGES" for r in rows):
+            if state != "running" and any(r["verdict"] == "REQUEST_CHANGES" for r in rows):
                 result["verdict"] = "changes"
             elif state == "succeeded" and all(r["state"] == "succeeded" and r["verdict"] == "APPROVE" for r in rows):
                 result["verdict"] = "approved"
@@ -196,12 +208,13 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(data, bytes):
             data = json.dumps(data, ensure_ascii=False, allow_nan=False).encode()
         self.send_response(code)
-        self.send_header("Content-Type", content_type + "; charset=utf-8")
+        suffix = "; charset=utf-8" if content_type.startswith("text/") or content_type == "application/json" else ""
+        self.send_header("Content-Type", content_type + suffix)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -216,7 +229,10 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path in ASSETS:
             filename, mime = ASSETS[path]
-            return self.send(200, Path(__file__).with_name(filename).read_bytes(), mime)
+            try:
+                return self.send(200, asset_path(filename).read_bytes(), mime)
+            except OSError:
+                return self.send(503, {"error": "Review Center asset unavailable"})
         expected = "Bearer " + self.server.token
         if not hmac.compare_digest(self.headers.get("Authorization", "").encode(), expected.encode()):
             return self.send(401, {"error": "Open the URL printed by ccg-agent-supervisor web-url"})

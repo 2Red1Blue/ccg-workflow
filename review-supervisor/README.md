@@ -49,6 +49,12 @@ as approval. A released run lock without a terminal receipt appears interrupted.
 The page polls every three seconds while visible. Files created by the existing
 CLI are picked up without importing or migrating them.
 
+The hero's TRACE / REVIEW / DECIDE controls filter the history; the four summary
+figures are also filter buttons. Click the poster for focus mode, click a report's
+button to collapse or expand it, press `/` to focus search, `r` to refresh, and
+`Escape` to clear search. These controls change only the local view; they never
+start, retry, approve, cancel, or mutate a review.
+
 Only fixed metadata fields and the two reports are exposed, never raw bundles,
 stderr/stdout logs, settings or arbitrary files. Reports are rendered as text,
 not executable HTML. Requests require an exact loopback Host, same-origin browser

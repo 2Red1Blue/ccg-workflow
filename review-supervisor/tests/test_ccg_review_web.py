@@ -130,6 +130,11 @@ class HistoryTest(unittest.TestCase):
             code, headers, body = get(path)
             self.assertEqual(code, 200)
             self.assertIn("frame-ancestors 'none'", headers['Content-Security-Policy'])
+            self.assertIn("img-src 'self'", headers['Content-Security-Policy'])
+        code, headers, body = get('/poster.webp')
+        self.assertEqual(code, 200)
+        self.assertEqual(headers['Content-Type'], 'image/webp')
+        self.assertEqual(body[:4], b'RIFF')
         self.assertEqual(get('/ccg-agent-supervisor.py', auth)[0], 404)
 
 

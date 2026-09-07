@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installReviewSupervisor, uninstallReviewSupervisor } from '../installer-review-supervisor'
+import { PACKAGE_ROOT } from '../installer-template'
 
 const roots: string[] = []
 
@@ -18,6 +19,8 @@ async function fixture() {
   for (const extension of ['py', 'html', 'js', 'css']) {
     await writeFile(join(source, `ccg_review_web.${extension}`), `web asset ${extension}\n`)
   }
+  await (await import('fs-extra')).default.ensureDir(join(source, 'assets'))
+  await writeFile(join(source, 'assets', 'ccg-review-center-poster.webp'), await readFile(join(PACKAGE_ROOT, 'review-supervisor', 'assets', 'ccg-review-center-poster.webp')))
   await writeFile(join(source, 'VERSION'), '9.8.7\n')
   return { root, source, install: join(root, 'install') }
 }
@@ -43,6 +46,10 @@ describe('installReviewSupervisor', () => {
       expect(await readFile(join(install, 'bin', `ccg_review_web.${extension}`), 'utf8')).toContain('web asset')
       expect(receipt.files).toHaveProperty(`ccg_review_web.${extension}`)
     }
+    const poster = await readFile(join(install, 'bin', 'ccg_review_center_poster.webp'))
+    expect(poster.subarray(0, 4).toString()).toBe('RIFF')
+    expect(poster.length).toBeGreaterThan(100)
+    expect(receipt.files).toHaveProperty('ccg_review_center_poster.webp')
   })
 
   it('backs up changed existing files before atomically replacing them', async () => {
@@ -82,7 +89,7 @@ describe('installReviewSupervisor', () => {
     const main = join(install, 'bin', 'ccg-agent-supervisor')
     const runtime = join(install, 'bin', 'ccg_review_runtime.py')
     await writeFile(runtime, 'operator change\n')
-    expect(await uninstallReviewSupervisor(install)).toEqual(['ccg-agent-supervisor', 'ccg_review_web.py', 'ccg_review_web.html', 'ccg_review_web.js', 'ccg_review_web.css'])
+    expect(await uninstallReviewSupervisor(install)).toEqual(['ccg-agent-supervisor', 'ccg_review_web.py', 'ccg_review_web.html', 'ccg_review_web.js', 'ccg_review_web.css', 'ccg_review_center_poster.webp'])
     await expect(readFile(main)).rejects.toThrow()
     expect(await readFile(runtime, 'utf8')).toBe('operator change\n')
   })
