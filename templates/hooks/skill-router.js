@@ -70,9 +70,20 @@ try {
   if (modelAction) {
     const homeDir = process.env.HOME || process.env.USERPROFILE || '';
     const wrapperPath = path.join(homeDir, '.claude', 'bin', 'codeagent-wrapper');
+    const supervisorPath = path.join(homeDir, '.claude', 'bin', 'ccg-agent-supervisor').replace(/'/g, "'\\''");
 
     let actionInstructions;
-    if (modelAction.model === 'both') {
+    if (modelAction.model === 'both' && modelAction.role === 'reviewer') {
+      actionInstructions = `<ccg-model-action>
+用户明确请求双模型审查。请在变更所在的 git 工作目录执行一次持久化审查：
+
+\`\`\`bash
+printf '%s\\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | '${supervisorPath}' review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked
+\`\`\`
+
+等待 Codex 与 Claude leaf 都完成；任何超时、传输失败或模型不匹配都不是审查通过。结果会写入 CCG Review Center。
+</ccg-model-action>`;
+    } else if (modelAction.model === 'both') {
       actionInstructions = `<ccg-model-action>
 用户请求双模型${modelAction.role === 'reviewer' ? '审查' : '分析'}。请立即执行：
 

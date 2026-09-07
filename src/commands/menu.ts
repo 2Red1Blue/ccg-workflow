@@ -651,7 +651,10 @@ async function configModelRouting(): Promise<void> {
       strategy: 'fallback',
     }
     config.routing.review = {
-      models: [...new Set([selectedFrontend, selectedBackend])] as any,
+      // Review is a separate safety boundary, not a mirror of coding roles.
+      // Choosing Codex for both implementation roles must not collapse a
+      // requested dual review into one Codex leaf.
+      models: ['codex', 'claude'],
       strategy: 'parallel',
     }
     config.routing.geminiModel = geminiModel

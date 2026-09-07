@@ -58,18 +58,13 @@ Gate: 双模型审查已返回 ✓
 
 **Gate check**: 审查范围已确定
 
-**并行调用**（`run_in_background: true`）：
-- **backend 模型**：reviewer 角色
-  ```
-  <TASK>
-  需求：审查以下代码变更
-  上下文：[git diff + 完整文件上下文]
-  </TASK>
-  OUTPUT: 审查发现（按严重度分级：Critical/Warning/Info，每条含：位置、问题、建议）
-  ```
-- **frontend 模型**：reviewer 角色（相同格式）
+在审查范围所在的 git 工作目录执行：
 
-等待双模型返回。
+```bash
+printf '%s\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | "$HOME/.claude/bin/ccg-agent-supervisor" review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked
+```
+
+该命令由持久化审查器并行运行独立 Codex/Claude leaf，并写入 CCG Review Center。等待两个 leaf 返回；任何超时、传输错误或模型不匹配均是**审查未完成**，不能作为通过。
 
 ### Phase 3: 综合报告 + 质量关卡
 

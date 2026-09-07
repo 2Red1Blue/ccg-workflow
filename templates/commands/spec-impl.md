@@ -74,42 +74,13 @@ description: '按规范执行 + 多模型协作 + 归档'
 
    If issues found, make targeted corrections.
 
-7. **Multi-Model Review (PARALLEL)**
-   - **CRITICAL**: You MUST launch BOTH {{BACKEND_PRIMARY}} AND {{FRONTEND_PRIMARY}} in a SINGLE message with TWO Bash tool calls.
-   - **DO NOT** call one model first and wait. Launch BOTH simultaneously with `run_in_background: true`.
-
-   **Step 7.1**: In ONE message, make TWO parallel Bash calls:
-
-   **FIRST Bash call ({{BACKEND_PRIMARY}})**:
-   ```
-   Bash({
-     command: "~/.claude/bin/codeagent-wrapper --progress --backend {{BACKEND_PRIMARY}} {{GEMINI_MODEL_FLAG}}{{GROK_MODEL_FLAG}}{{KIMI_MODEL_FLAG}}{{OPENCODE_MODEL_FLAG}}resume <CODEX_PROTO_SESSION> - \"{{WORKDIR}}\" <<'EOF'\nReview the implementation changes:\n- Correctness: logic errors, edge cases\n- Security: injection, auth issues\n- Spec compliance: constraints satisfied\nOUTPUT: JSON with findings\nEOF",
-     run_in_background: true,
-     timeout: 300000,
-     description: "{{BACKEND_PRIMARY}}: correctness/security review"
-   })
-   ```
-
-   **SECOND Bash call ({{FRONTEND_PRIMARY}}) - IN THE SAME MESSAGE**:
-   ```
-   Bash({
-     command: "~/.claude/bin/codeagent-wrapper --progress --backend {{FRONTEND_PRIMARY}} {{GEMINI_MODEL_FLAG}}{{GROK_MODEL_FLAG}}{{KIMI_MODEL_FLAG}}{{OPENCODE_MODEL_FLAG}}resume <GEMINI_PROTO_SESSION> - \"{{WORKDIR}}\" <<'EOF'\nReview the implementation changes:\n- Maintainability: readability, complexity\n- Patterns: consistency with project style\n- Integration: cross-module impacts\nOUTPUT: JSON with findings\nEOF",
-     run_in_background: true,
-     timeout: 300000,
-     description: "{{FRONTEND_PRIMARY}}: maintainability/patterns review"
-   })
-   ```
-
-   **Step 7.2**: After BOTH Bash calls return task IDs, wait for results with TWO TaskOutput calls:
-   ```
-   TaskOutput({ task_id: "<codex_task_id>", block: true, timeout: 600000 })
-   TaskOutput({ task_id: "<gemini_task_id>", block: true, timeout: 600000 })
-   ```
-
-   ⛔ **前端模型失败必须重试**：若前端模型调用失败，最多重试 2 次（间隔 5 秒）。3 次全败才跳过。
-   ⛔ **后端模型结果必须等待**：后端模型执行 5-15 分钟属正常，超时后继续轮询，禁止跳过。
-
-   Address any critical findings before proceeding.
+7. **Persisted Dual-Model Review**
+   - Before marking implementation complete, run the review from the git worktree:
+     ```bash
+     printf '%s\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | "$HOME/.claude/bin/ccg-agent-supervisor" review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked
+     ```
+   - The supervisor starts independent Codex and Claude review leaf processes in parallel and persists both raw reports to CCG Review Center.
+   - A timeout, transport failure, or unexpected response model is an incomplete review, never an approval. Address Critical findings and re-run this step.
 
 8. **Update Task Status**
    - Mark completed task in `tasks.md`: `- [x] Task description`

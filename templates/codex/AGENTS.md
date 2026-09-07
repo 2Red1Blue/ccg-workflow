@@ -278,31 +278,23 @@ Critical 问题 → spawn 修复代理。Warning → 视情况修复。
 - [ ] 无硬编码密钥
 - [ ] git diff 只有预期变更
 
-### 何时调外部模型审查
-- 变更 >30 行 → **必须**调双模型审查（{{FRONTEND_PRIMARY}} + Claude 都调）
-- 变更 ≤30 行但涉及 auth/数据库/加密 → **必须**调双模型审查
-- 变更 ≤30 行且低风险 → 可以只调一个
+### 何时触发外部双模型审查
+
+只在任务进入 `review`、用户明确请求审查，或用户准备交付/提交时判断；**不要按每次编辑或单纯超过 30 行触发**。
+
+- S：仅 auth、权限、加密、迁移、API 契约等高风险变更需要双模型审查。
+- M：在交付节点，满足任一条件才需要：3 个以上非测试源码文件、80 行以上源码变更、接口契约/数据结构变更，或高风险变更。
+- L/XL：在交付或 review 节点需要双模型审查。
+- 仅文档、资产、lockfile 或测试文件变更不单独触发双模型审查。
 
 ### ⛔ 审查流程（双模型交叉验证）
 
 ```bash
-# 必须并行调用两个模型审查 git diff
-~/.claude/bin/codeagent-wrapper --progress --backend {{FRONTEND_PRIMARY}} - "$(pwd)" <<'EOF'
-ROLE_FILE: ~/.claude/.ccg/prompts/{{FRONTEND_PRIMARY}}/reviewer.md
-<TASK>审查以下代码变更：$(git diff)</TASK>
-OUTPUT: Critical/Warning/Info 分级审查报告
-EOF
-&
-~/.claude/bin/codeagent-wrapper --progress --backend claude - "$(pwd)" <<'EOF'
-ROLE_FILE: ~/.claude/.ccg/prompts/claude/reviewer.md
-<TASK>审查以下代码变更：$(git diff)</TASK>
-OUTPUT: Critical/Warning/Info 分级审查报告
-EOF
-&
-wait
+# 持久化并行运行独立 Codex 与 Claude review leaf
+printf '%s\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | "$HOME/.claude/bin/ccg-agent-supervisor" review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked
 ```
 
-1. **两个模型都要调** — 这是多模型协作的核心，不是二选一
+1. **两个 leaf 都要成功** — 超时、传输失败或模型不匹配都不是通过
 2. 综合双方意见，合并去重，分 Critical / Warning / Info
 3. Critical → 修复后重新双模型审查
 4. Warning → 建议修复

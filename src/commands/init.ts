@@ -1001,7 +1001,9 @@ export async function init(options: InitOptions = {}): Promise<void> {
       strategy: 'fallback',
     },
     review: {
-      models: [...new Set([...frontendModels, ...backendModels])],
+      // Keep review independent of coding-role selection. This also migrates
+      // existing `init --skip-prompt` users away from a one-model review.
+      models: ['codex', 'claude'],
       strategy: 'parallel',
     },
     mode,

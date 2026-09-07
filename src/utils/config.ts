@@ -87,7 +87,10 @@ export function createDefaultRouting(): ModelRouting {
       strategy: 'parallel',
     },
     review: {
-      models: ['codex', 'antigravity'],
+      // Persisted review is deliberately independent of the implementation
+      // route: Codex + Claude give two distinct review leaves even when both
+      // frontend and backend work happen to use Codex.
+      models: ['codex', 'claude'],
       strategy: 'parallel',
     },
     mode: 'smart',

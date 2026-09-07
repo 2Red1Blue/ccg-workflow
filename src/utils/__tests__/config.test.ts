@@ -16,7 +16,7 @@ describe('createDefaultRouting', () => {
 
   it('returns both models for review', () => {
     const routing = createDefaultRouting()
-    expect(routing.review.models).toEqual(['codex', 'antigravity'])
+    expect(routing.review.models).toEqual(['codex', 'claude'])
     expect(routing.review.strategy).toBe('parallel')
   })
 

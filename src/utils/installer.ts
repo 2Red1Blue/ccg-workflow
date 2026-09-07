@@ -973,7 +973,12 @@ async function installEngineFiles(ctx: InstallContext): Promise<void> {
 // CCG 3.0 Hook installation
 // ═══════════════════════════════════════════════════════
 
-const HOOK_FILES = ['task-utils.js', 'workflow-state.js', 'session-start.js', 'subagent-context.js', 'skill-router.js']
+// One Claude Code event is enough. SessionStart and PreToolUse used to inject
+// on every session/tool call without ever creating a review record. Existing
+// UserPromptSubmit state and explicit skill-routing behavior remains intact.
+const HOOK_FILES = ['task-utils.js', 'adaptive-guardrail.js', 'workflow-state.js', 'skill-router.js']
+const RETIRED_HOOK_FILES = ['session-start.js', 'subagent-context.js']
+const CCG_HOOK_FILES = new Set([...HOOK_FILES, ...RETIRED_HOOK_FILES])
 
 /**
  * Install CCG hook scripts to ~/.claude/hooks/ccg/
@@ -993,6 +998,14 @@ async function installHookScripts(ctx: InstallContext): Promise<void> {
         await fs.copy(src, dest, { overwrite: true })
       }
     }
+    // Remove only unchanged, known CCG files. A modified legacy script is the
+    // operator's customization and must remain untouched for manual migration.
+    for (const file of RETIRED_HOOK_FILES) {
+      const source = join(hooksSrcDir, file)
+      const destination = join(hooksDestDir, file)
+      if (!(await fs.pathExists(source)) || !(await fs.pathExists(destination))) continue
+      if ((await fs.readFile(source)).equals(await fs.readFile(destination))) await fs.remove(destination)
+    }
   }
   catch (error) {
     ctx.result.errors.push(`Failed to install hook scripts: ${error}`)
@@ -1003,6 +1016,46 @@ async function installHookScripts(ctx: InstallContext): Promise<void> {
  * Register CCG hooks in ~/.claude/settings.json.
  * Merges with existing hooks — does not overwrite user's other hooks.
  */
+export function shellQuote(value: string, platform = process.platform): string {
+  if (platform === 'win32') return `"${value.replace(/"/g, '""')}"`
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+export function mergeCcgHooks(settings: Record<string, any>, hooksDir: string): Record<string, any> {
+  const hooks = (settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {}) as Record<string, any[]>
+  const isCcgCommand = (hook: { command?: unknown }): boolean => {
+    if (typeof hook.command !== 'string') return false
+    const normalized = hook.command.replace(/\\/g, '/')
+    return [...CCG_HOOK_FILES].some(file => normalized.includes(`/hooks/ccg/${file}`))
+  }
+  const removeCcgCommands = (entry: any): any | undefined => {
+    if (!entry || typeof entry !== 'object' || !Array.isArray(entry.hooks)) return entry
+    const remaining = entry.hooks.filter((hook: { command?: unknown }) => !isCcgCommand(hook))
+    if (remaining.length === entry.hooks.length) return entry
+    if (remaining.length === 0) return undefined
+    return { ...entry, hooks: remaining }
+  }
+
+  // Remove CCG command objects without deleting unrelated commands that a
+  // user combined into the same entry. This also removes the retired events.
+  for (const event of Object.keys(hooks)) {
+    const current = Array.isArray(hooks[event]) ? hooks[event] : []
+    const remaining = current.map(removeCcgCommands).filter((entry): entry is any => entry !== undefined)
+    if (remaining.length === 0) delete hooks[event]
+    else hooks[event] = remaining
+  }
+
+  const ccgCommands = {
+    hooks: [
+      { type: 'command', command: `node ${shellQuote(join(hooksDir, 'adaptive-guardrail.js'))}`, timeout: 10000 },
+      { type: 'command', command: `node ${shellQuote(join(hooksDir, 'workflow-state.js'))}`, timeout: 10000 },
+      { type: 'command', command: `node ${shellQuote(join(hooksDir, 'skill-router.js'))}`, timeout: 5000 },
+    ],
+  }
+  hooks.UserPromptSubmit = [...(hooks.UserPromptSubmit || []), ccgCommands]
+  return { ...settings, hooks }
+}
+
 async function registerHooksInSettings(ctx: InstallContext): Promise<void> {
   const settingsPath = join(ctx.installDir, 'settings.json')
   const hooksDir = join(ctx.installDir, 'hooks', 'ccg')
@@ -1018,44 +1071,8 @@ async function registerHooksInSettings(ctx: InstallContext): Promise<void> {
       }
     }
 
-    const hooks = (settings.hooks || {}) as Record<string, unknown[]>
-
-    const ccgHookDefs = {
-      UserPromptSubmit: {
-        hooks: [
-          { type: 'command', command: `node ${join(hooksDir, 'workflow-state.js')}`, timeout: 10000 },
-          { type: 'command', command: `node ${join(hooksDir, 'skill-router.js')}`, timeout: 5000 },
-        ],
-      },
-      SessionStart: {
-        matcher: 'startup|clear|compact',
-        hooks: [{ type: 'command', command: `node ${join(hooksDir, 'session-start.js')}`, timeout: 15000 }],
-      },
-      PreToolUse: {
-        matcher: 'Bash|Agent',
-        hooks: [{ type: 'command', command: `node ${join(hooksDir, 'subagent-context.js')}`, timeout: 15000 }],
-      },
-    }
-
-    for (const [event, def] of Object.entries(ccgHookDefs)) {
-      const eventHooks = (hooks[event] || []) as Record<string, unknown>[]
-      const ccgCommand = (def.hooks[0] as Record<string, unknown>).command as string
-      const existingIdx = eventHooks.findIndex((h) => {
-        const hHooks = (h.hooks || []) as Record<string, unknown>[]
-        return hHooks.some(hh => typeof hh.command === 'string' && hh.command.includes('hooks/ccg/'))
-      })
-
-      if (existingIdx >= 0) {
-        eventHooks[existingIdx] = def
-      }
-      else {
-        eventHooks.push(def)
-      }
-      hooks[event] = eventHooks
-    }
-
-    settings.hooks = hooks
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+    settings = mergeCcgHooks(settings, hooksDir)
+    await fs.writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
   }
   catch (error) {
     ctx.result.errors.push(`Failed to register hooks in settings.json: ${error}`)

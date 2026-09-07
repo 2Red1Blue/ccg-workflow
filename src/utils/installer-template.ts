@@ -93,7 +93,7 @@ export function injectConfigVariables(content: string, config: {
   processed = processed.replace(/\{\{BACKEND_PRIMARY\}\}/g, backendPrimary)
 
   // Review models
-  const reviewModels = routing.review?.models || ['codex', 'antigravity']
+  const reviewModels = routing.review?.models || ['codex', 'claude']
   processed = processed.replace(/\{\{REVIEW_MODELS\}\}/g, JSON.stringify(reviewModels))
 
   // Routing mode
