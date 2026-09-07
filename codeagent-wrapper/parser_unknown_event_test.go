@@ -112,4 +112,3 @@ func TestParseArgs_ParsesProgressFlag(t *testing.T) {
 		t.Fatalf("unexpected cfg: %+v", cfg)
 	}
 }
-

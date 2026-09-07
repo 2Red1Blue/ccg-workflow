@@ -257,6 +257,42 @@ func newTaskLoggerHandle(taskID string) taskLoggerHandle {
 }
 
 // defaultRunCodexTaskFn is the default implementation of runCodexTaskFn (exposed for test reset)
+type sessionBindingTracker struct {
+	mu   sync.Mutex
+	done chan error
+}
+
+func (t *sessionBindingTracker) start(sessionID, backend string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.done != nil {
+		t.mu.Unlock()
+		return
+	}
+	t.done = make(chan error, 1)
+	done := t.done
+	t.mu.Unlock()
+
+	go func() {
+		done <- registerSessionBackend(sessionID, backend)
+	}()
+}
+
+func (t *sessionBindingTracker) wait() error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	done := t.done
+	t.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	return <-done
+}
+
 func defaultRunCodexTaskFn(task TaskSpec, timeout int) TaskResult {
 	if task.WorkDir == "" {
 		task.WorkDir = defaultWorkdir
@@ -268,8 +304,15 @@ func defaultRunCodexTaskFn(task TaskSpec, timeout int) TaskResult {
 		task.UseStdin = true
 	}
 
-	backendName := task.Backend
-	if backendName == "" {
+	backendName := strings.TrimSpace(task.Backend)
+	if task.Mode == "resume" {
+		resolvedBackend, sessionID, err := resolveResumeSession(task.SessionID, backendName, backendName != "")
+		if err != nil {
+			return TaskResult{TaskID: task.ID, ExitCode: 1, Error: err.Error()}
+		}
+		backendName = resolvedBackend
+		task.SessionID = sessionID
+	} else if backendName == "" {
 		backendName = defaultBackendName
 	}
 
@@ -679,6 +722,11 @@ func generateFinalOutputWithMode(results []TaskResult, summaryOnly bool) string 
 					sb.WriteString(fmt.Sprintf("Log: %s\n", logPath))
 				}
 			}
+			for _, warning := range res.Warnings {
+				if text := sanitizeOutput(warning); text != "" {
+					sb.WriteString(fmt.Sprintf("Warning: %s\n", text))
+				}
+			}
 		}
 
 		// Summary section
@@ -736,6 +784,9 @@ func generateFinalOutputWithMode(results []TaskResult, summaryOnly bool) string 
 			}
 			if res.SessionID != "" {
 				sb.WriteString(fmt.Sprintf("Session: %s\n", sanitizeOutput(res.SessionID)))
+				if res.Backend != "" {
+					sb.WriteString(fmt.Sprintf("Session-Ref: %s\n", sanitizeOutput(formatSessionRef(res.Backend, res.SessionID))))
+				}
 			}
 			if res.LogPath != "" {
 				logPath := sanitizeOutput(res.LogPath)
@@ -743,6 +794,11 @@ func generateFinalOutputWithMode(results []TaskResult, summaryOnly bool) string 
 					sb.WriteString(fmt.Sprintf("Log: %s (shared)\n", logPath))
 				} else {
 					sb.WriteString(fmt.Sprintf("Log: %s\n", logPath))
+				}
+			}
+			for _, warning := range res.Warnings {
+				if text := sanitizeOutput(warning); text != "" {
+					sb.WriteString(fmt.Sprintf("Warning: %s\n", text))
 				}
 			}
 			if res.Message != "" {
@@ -820,7 +876,7 @@ func runCodexProcess(parentCtx context.Context, codexArgs []string, taskText str
 	return res.Message, res.SessionID, res.ExitCode
 }
 
-func runCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backend Backend, customArgs []string, useCustomArgs bool, silent bool, timeoutSec int) TaskResult {
+func runCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backend Backend, customArgs []string, useCustomArgs bool, silent bool, timeoutSec int) (result TaskResult) {
 	if parentCtx == nil {
 		parentCtx = taskSpec.Context
 	}
@@ -828,7 +884,7 @@ func runCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		parentCtx = context.Background()
 	}
 
-	result := TaskResult{TaskID: taskSpec.ID}
+	result = TaskResult{TaskID: taskSpec.ID}
 	injectedLogger := taskLoggerFromContext(parentCtx)
 	logger := injectedLogger
 
@@ -857,6 +913,7 @@ func runCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	} else if commandName != "" {
 		cfg.Backend = commandName
 	}
+	result.Backend = cfg.Backend
 
 	if cfg.Mode == "" {
 		cfg.Mode = "new"
@@ -1103,15 +1160,28 @@ func runCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	// in stdout would never be printed).
 	// Skip in silent mode (parallel tasks) to avoid polluting stderr.
 	var sessionIDEmitted bool
-	var onSessionStartedCallback func(string)
-	if !silent {
-		onSessionStartedCallback = func(id string) {
-			if sessionIDEmitted || id == "" {
-				return
+	bindingTracker := &sessionBindingTracker{}
+	defer func() {
+		if err := bindingTracker.wait(); err != nil {
+			warning := fmt.Sprintf("session backend binding durability failed: %v; resume with the qualified Session-Ref", err)
+			logWarnFn(warning)
+			result.Warnings = append(result.Warnings, warning)
+			if !silent {
+				fmt.Fprintf(os.Stderr, "  WARNING: %s\n", warning)
 			}
-			sessionIDEmitted = true
-			fmt.Fprintf(os.Stderr, "  Session-ID: %s\n", id)
 		}
+	}()
+	onSessionStartedCallback := func(id string) {
+		if id == "" {
+			return
+		}
+		bindingTracker.start(id, cfg.Backend)
+		if silent || sessionIDEmitted {
+			return
+		}
+		sessionIDEmitted = true
+		fmt.Fprintf(os.Stderr, "  Session-ID: %s\n", id)
+		fmt.Fprintf(os.Stderr, "  Session-Ref: %s\n", formatSessionRef(cfg.Backend, id))
 	}
 
 	// Antigravity CLI outputs plain text (no JSON streaming).

@@ -1,5 +1,6 @@
 import type { InstallResult } from '../types'
 import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
 import ansis from 'ansis'
 import fs from 'fs-extra'
 import { basename, join } from 'pathe'
@@ -78,7 +79,7 @@ export type { SkillMeta } from './skill-registry'
  * Must match the `version` constant in codeagent-wrapper/main.go.
  * When this differs from the installed binary, update triggers re-download.
  */
-const EXPECTED_BINARY_VERSION = '5.15.0'
+const EXPECTED_BINARY_VERSION = '5.16.0'
 
 // ═══════════════════════════════════════════════════════
 // Install context — shared across sub-functions
@@ -841,6 +842,34 @@ async function installBinaryFile(ctx: InstallContext): Promise<void> {
 
     const destBinary = join(binDir, process.platform === 'win32' ? 'codeagent-wrapper.exe' : 'codeagent-wrapper')
 
+    // A local source build has its own reproducible update path. Never replace
+    // its guard with an upstream download just because release versions differ.
+    const buildReceipt = join(binDir, 'codeagent-wrapper.build.json')
+    if (await fs.pathExists(buildReceipt)) {
+      try {
+        const receipt = await fs.readJson(buildReceipt)
+        const binary = join(binDir, 'codeagent-wrapper.real')
+        const meta = await fs.lstat(binary)
+        if (!meta.isFile() || meta.isSymbolicLink()) throw new Error('non-regular binary')
+        const guard = await fs.lstat(destBinary)
+        if (!guard.isFile() || guard.isSymbolicLink()) throw new Error('non-regular guard')
+        await fs.access(destBinary, fs.constants.X_OK)
+        await fs.access(binary, fs.constants.X_OK)
+        const guardHash = createHash('sha256').update(await fs.readFile(destBinary)).digest('hex')
+        if (guardHash !== receipt.guardSha256) throw new Error('guard hash mismatch')
+        const actual = createHash('sha256').update(await fs.readFile(binary)).digest('hex')
+        if (actual !== receipt.sha256) throw new Error('hash mismatch')
+      }
+      catch {
+        ctx.result.errors.push('Git-managed wrapper is missing, invalid or modified; reinstall with scripts/install-local-wrapper.py')
+        ctx.result.success = false
+        return
+      }
+      ctx.result.binPath = binDir
+      ctx.result.binInstalled = true
+      return
+    }
+
     // Check if binary exists, is functional, AND version matches
     if (await fs.pathExists(destBinary)) {
       try {
@@ -1225,7 +1254,7 @@ export async function uninstallWorkflows(installDir: string, options?: { preserv
   }
 
   // Remove codeagent-wrapper binary (skip during update to avoid unnecessary re-download)
-  if (!options?.preserveBinary && await fs.pathExists(binDir)) {
+  if (!options?.preserveBinary && await fs.pathExists(binDir) && !await fs.pathExists(join(binDir, 'codeagent-wrapper.build.json'))) {
     try {
       const wrapperName = process.platform === 'win32' ? 'codeagent-wrapper.exe' : 'codeagent-wrapper'
       const wrapperPath = join(binDir, wrapperName)

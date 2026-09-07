@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "CCG Web UI Companion",
+  "version": "1.0.0",
+  "description": "Open CCG task pages in background tabs and close only those task pages when finished.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1THSVSbzc1yiNNOFDqhx1cSD7nvGU5tlb5/Eg81lfn6TlX16SbM4LomGwkP/9DZXIq91UW3IIA/Wp0VqOE2gwj3AMgn/z810sO1BhEOW0hSJGIiEXKtnkvyydCeH2PgR7zbzGP3H7DOmdOm0fwAOSybHQMSU/vgDO8xMnXhgzDVlNFkTT6THTiXW9ptW/w7S6ETDQa4IvPaB0s/xXSfmdVOHqsBIQT1em5NzkGQjB4ksJpEFv0v5MY6o3Uu2k29vrhSsod5VpP+yrfnrPJiMdUuI4KYw2mNU24jLURjFn2m1VfZTz3XNyq5EgN08T53WFXtq+j/7vv1+oYDM4cDRTQIDAQAB",
+  "permissions": ["nativeMessaging", "storage", "alarms", "tabs"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_title": "CCG task tabs: click to reconnect"}
+}

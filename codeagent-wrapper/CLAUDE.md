@@ -2,8 +2,8 @@
 
 > [根目录](../CLAUDE.md) > **codeagent-wrapper**
 
-**Last Updated**: 2026-08-29
-**Binary Version**: v5.15.0
+**Last Updated**: 2026-09-02
+**Binary Version**: v5.16.0
 **Go Version**: 1.21+（`go.mod:1`）
 
 ---
@@ -33,8 +33,8 @@ codeagent-wrapper [--backend <codex|gemini|claude>] - [工作目录] <<'EOF'
 EOF
 
 # 会话恢复
-codeagent-wrapper resume <session_id> "任务文本" [工作目录]
-codeagent-wrapper resume <session_id> - [工作目录]
+codeagent-wrapper resume <backend>:<session_id> "任务文本" [工作目录]
+codeagent-wrapper resume <backend>:<session_id> - [工作目录]
 
 # 并行模式（从 stdin 读取多任务配置）
 codeagent-wrapper --parallel [--backend <name>] [--full-output] < tasks.txt
@@ -162,13 +162,15 @@ id: task-b
 
 ### Session 管理
 
-- 后端执行完成后返回 `SESSION_ID`（写入 stdout 末尾 + 提前写入 stderr）
-- 恢复模式：`resume <session_id>` 参数
+- 后端报告会话后同时返回兼容字段 `SESSION_ID` 和规范字段 `SESSION_REF=<backend>:<session_id>`。
+- backend/session 绑定按 session ID 哈希分片持久化在用户配置目录，记录不含 task、路径或消息正文；新记录顺带有界清理，无后台清理进程。
+- 恢复模式优先使用 `resume <backend>:<session_id>`；已记录的裸 ID 可自动路由；旧裸 ID 必须显式传 `--backend` 完成迁移。限定引用、显式 backend 与记录冲突时 fail closed。
+- Claude `--progress` 将 thinking/tool/task 活动转为固定字段的 5 秒节流事件，不输出 thinking 文本、工具参数、工具结果或消息正文。
 - 并行模式每个任务独立 session，互不干扰
 
 ### WebServer SSE 流（`server.go`）
 
-默认模式（非 `--lite`）启动一个本地 HTTP 服务（随机端口），通过 SSE 实时推送后端输出；终端会打印 URL。为避免每个子任务新建 tab 并抢占焦点，默认**不自动打开浏览器**。需要自动打开时显式设置 `CODEAGENT_WEB_UI_AUTO_OPEN=true`。精简模式（`--lite`）跳过该服务。
+默认模式（非 `--lite`）启动 loopback HTTP 服务并打印 URL；安装 `browser-companion/` Chrome 扩展后，任务页面会在后台非活动 tab 打开，并在任务结束后由扩展关闭。导航离开会取消自动关闭。`CODEAGENT_WEB_UI_AUTO_OPEN=false` 保留服务但不自动开页，`true` 使用旧系统浏览器打开方式。精简模式（`--lite`）跳过该服务。
 
 ---
 
@@ -297,8 +299,8 @@ bash build-all.sh
 
 | 文件 | 位置 | 当前值 |
 |------|------|--------|
-| `codeagent-wrapper/main.go` | `version = "..."` （`main.go:17`） | `5.15.0` |
-| `src/utils/installer.ts` | `EXPECTED_BINARY_VERSION = '...'` | `5.15.0` |
+| `codeagent-wrapper/main.go` | `version = "..."` （`main.go:17`） | `5.16.0` |
+| `src/utils/installer.ts` | `EXPECTED_BINARY_VERSION = '...'` | `5.16.0` |
 
 两边不一致的后果：用户运行 `npx ccg-workflow update` 时无法触发 binary 重新下载，继续使用旧版 binary。
 

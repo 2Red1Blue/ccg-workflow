@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	version               = "5.15.0"
+	version               = "5.16.0"
 	defaultWorkdir        = "."
 	defaultTimeout        = 7200 // seconds (2 hours)
 	defaultCoverageTarget = 90.0
@@ -32,6 +32,9 @@ const (
 )
 
 var useASCIIMode = os.Getenv("CODEAGENT_ASCII_MODE") == "true"
+
+// Embedded by the source installer; releases can expose the exact Git input.
+var buildCommit = "development"
 
 // Lite mode: disable WebServer, reduce logging, faster post-message delay
 // Can be enabled via --lite flag or CODEAGENT_LITE_MODE=true environment variable
@@ -128,6 +131,9 @@ func run() (exitCode int) {
 	// Handle --version and --help first (no logger needed)
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "--build-info":
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"version": version, "gitCommit": buildCommit})
+			return 0
 		case "--version", "-v":
 			fmt.Printf("%s version %s\n", name, version)
 			return 0
@@ -195,6 +201,7 @@ func run() (exitCode int) {
 
 		if parallelIndex != -1 {
 			backendName := defaultBackendName
+			backendExplicit := false
 			fullOutput := false
 			progressFlag := false
 			var extras []string
@@ -222,6 +229,7 @@ func run() (exitCode int) {
 						return 1
 					}
 					backendName = args[i+1]
+					backendExplicit = true
 					i++
 				case strings.HasPrefix(arg, "--backend="):
 					value := strings.TrimPrefix(arg, "--backend=")
@@ -230,6 +238,7 @@ func run() (exitCode int) {
 						return 1
 					}
 					backendName = value
+					backendExplicit = true
 				case arg == "--with-mcp":
 					withMCPInParallel = true
 					continue
@@ -285,7 +294,7 @@ func run() (exitCode int) {
 
 			cfg.GlobalBackend = backendName
 			for i := range cfg.Tasks {
-				if strings.TrimSpace(cfg.Tasks[i].Backend) == "" {
+				if strings.TrimSpace(cfg.Tasks[i].Backend) == "" && (cfg.Tasks[i].Mode != "resume" || backendExplicit) {
 					cfg.Tasks[i].Backend = backendName
 				}
 				cfg.Tasks[i].Progress = progressFlag
@@ -352,6 +361,15 @@ func run() (exitCode int) {
 	if err != nil {
 		logError(err.Error())
 		return 1
+	}
+	if cfg.Mode == "resume" {
+		resolvedBackend, sessionID, resolveErr := resolveResumeSession(cfg.SessionID, cfg.Backend, cfg.BackendExplicit)
+		if resolveErr != nil {
+			logError(resolveErr.Error())
+			return 1
+		}
+		cfg.Backend = resolvedBackend
+		cfg.SessionID = sessionID
 	}
 	logInfo(fmt.Sprintf("Parsed args: mode=%s, task_len=%d, backend=%s", cfg.Mode, len(cfg.Task), cfg.Backend))
 
@@ -525,7 +543,7 @@ func run() (exitCode int) {
 
 	fmt.Println(result.Message)
 	if result.SessionID != "" {
-		fmt.Printf("\n---\nSESSION_ID: %s\n", result.SessionID)
+		fmt.Printf("\n---\nSESSION_ID: %s\nSESSION_REF: %s\n", result.SessionID, formatSessionRef(cfg.Backend, result.SessionID))
 	}
 
 	// CRITICAL: Windows-specific fix for Git Bash background process output capture
@@ -589,8 +607,8 @@ Usage:
     %[1]s --backend claude "task" [workdir]
     %[1]s --lite "task" [workdir]     Lite mode (faster, no Web UI)
     %[1]s - [workdir]              Read task from stdin
-    %[1]s resume <session_id> "task" [workdir]
-    %[1]s resume <session_id> - [workdir]
+    %[1]s resume <session_ref> "task" [workdir]
+    %[1]s resume <session_ref> - [workdir]
     %[1]s --parallel               Run tasks in parallel (config from stdin)
     %[1]s --parallel --full-output Run tasks in parallel with full output (legacy)
     %[1]s --version
@@ -611,12 +629,18 @@ Options:
                           Examples: gemini-2.5-flash, gemini-1.5-pro
     --progress            Emit compact progress lines to stderr during execution
 
+Session references:
+    New sessions print both SESSION_ID and backend-qualified SESSION_REF.
+    Resume accepts <backend>:<session_id>, a recorded bare ID, or a legacy
+    bare ID together with an explicit --backend. Unknown bare IDs fail closed.
+
 Environment Variables:
     CODEX_TIMEOUT              Timeout in milliseconds (default: 7200000)
     CODEX_REQUIRE_APPROVAL     Require manual approval for file operations (default: false)
     CODEX_DISABLE_SKIP_GIT_CHECK  Disable skip-git-repo-check flag (default: false)
     CODEAGENT_ASCII_MODE       Use ASCII symbols instead of Unicode (PASS/WARN/FAIL)
     CODEAGENT_LITE_MODE        Enable lite mode (true/false)
+    CODEAGENT_STATE_DIR        Override durable per-user session binding directory
 
 Exit Codes:
     0    Success

@@ -16,9 +16,10 @@ ccg-agent-supervisor
 ccg_review_runtime.py
 ```
 
-The wrapper's local Web UI remains available. It prints its local URL and opens
-a browser only when `CODEAGENT_WEB_UI_AUTO_OPEN=true` is set; the literal is
-case-sensitive.
+The wrapper's local Web UI remains available. The [Chrome companion](../browser-companion/README.md)
+opens inactive task tabs and closes them on completion. Without the companion,
+the printed URL remains usable. `CODEAGENT_WEB_UI_AUTO_OPEN=false` disables
+automatic tabs; `true` explicitly selects the legacy system-browser opener.
 
 Development verification:
 

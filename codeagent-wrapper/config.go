@@ -18,6 +18,7 @@ type Config struct {
 	ExplicitStdin      bool
 	Timeout            int
 	Backend            string
+	BackendExplicit    bool // true only when the caller supplied --backend
 	SkipPermissions    bool
 	MaxParallelWorkers int
 	GeminiModel        string // Gemini model name (empty = use default)
@@ -55,12 +56,14 @@ type TaskSpec struct {
 
 // TaskResult captures the execution outcome of a task
 type TaskResult struct {
-	TaskID    string `json:"task_id"`
-	ExitCode  int    `json:"exit_code"`
-	Message   string `json:"message"`
-	SessionID string `json:"session_id"`
-	Error     string `json:"error"`
-	LogPath   string `json:"log_path"`
+	TaskID    string   `json:"task_id"`
+	Backend   string   `json:"backend,omitempty"`
+	ExitCode  int      `json:"exit_code"`
+	Message   string   `json:"message"`
+	SessionID string   `json:"session_id"`
+	Error     string   `json:"error"`
+	LogPath   string   `json:"log_path"`
+	Warnings  []string `json:"warnings,omitempty"`
 	// Structured report fields
 	Coverage       string   `json:"coverage,omitempty"`        // extracted coverage percentage (e.g., "92%")
 	CoverageNum    float64  `json:"coverage_num,omitempty"`    // numeric coverage for comparison
@@ -222,6 +225,7 @@ func parseArgs() (*Config, error) {
 	withMCP := envFlagEnabled("CODEAGENT_WITH_MCP")
 
 	backendName := defaultBackendName
+	backendExplicit := false
 	skipPermissions := envFlagEnabled("CODEAGENT_SKIP_PERMISSIONS")
 	progress := false
 	filtered := make([]string, 0, len(args))
@@ -236,6 +240,7 @@ func parseArgs() (*Config, error) {
 				return nil, fmt.Errorf("--backend flag requires a value")
 			}
 			backendName = args[i+1]
+			backendExplicit = true
 			i++
 			continue
 		case strings.HasPrefix(arg, "--backend="):
@@ -244,6 +249,7 @@ func parseArgs() (*Config, error) {
 				return nil, fmt.Errorf("--backend flag requires a value")
 			}
 			backendName = value
+			backendExplicit = true
 			continue
 		case arg == "--gemini-model":
 			if i+1 >= len(args) {
@@ -341,7 +347,7 @@ func parseArgs() (*Config, error) {
 	}
 	args = filtered
 
-	cfg := &Config{WorkDir: defaultWorkdir, Backend: backendName, SkipPermissions: skipPermissions, GeminiModel: geminiModel, GrokModel: grokModel, KimiModel: kimiModel, OpencodeModel: opencodeModel, Progress: progress, WithMCP: withMCP}
+	cfg := &Config{WorkDir: defaultWorkdir, Backend: backendName, BackendExplicit: backendExplicit, SkipPermissions: skipPermissions, GeminiModel: geminiModel, GrokModel: grokModel, KimiModel: kimiModel, OpencodeModel: opencodeModel, Progress: progress, WithMCP: withMCP}
 	cfg.MaxParallelWorkers = resolveMaxParallelWorkers()
 
 	if args[0] == "resume" {

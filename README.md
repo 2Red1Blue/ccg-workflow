@@ -86,7 +86,7 @@ npx ccg-workflow    # Install in 60 seconds
 <img src="assets/readme/architecture.png" alt="CCG Architecture" width="800">
 </div>
 
-**Claude Code** is the lead orchestrator. It analyzes your intent, selects a strategy, and manages the entire workflow. The **Hook Engine** injects state every turn so Claude never loses context — even after compaction. The **codeagent-wrapper** (a compiled Go binary) bridges Claude to external models for parallel analysis and review. Its optional local Web UI prints a URL but does not open browser tabs unless `CODEAGENT_WEB_UI_AUTO_OPEN=true` is set.
+**Claude Code** is the lead orchestrator. It analyzes your intent, selects a strategy, and manages the entire workflow. The **Hook Engine** injects state every turn so Claude never loses context — even after compaction. The **codeagent-wrapper** (a compiled Go binary) bridges Claude to external models for parallel analysis and review. Its local Web UI works with the [Chrome companion](browser-companion/README.md) for background tabs that close when the task ends; a URL remains available for manual inspection.
 
 ## How It Works
 

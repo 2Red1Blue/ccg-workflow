@@ -904,6 +904,8 @@ func TestRunCodexTask_ForcesStopAfterCompletion(t *testing.T) {
 		t.Skip("skipping timing-sensitive integration test in short mode")
 	}
 	defer resetTestHooks()
+	// This checks completion ordering, not the configurable production grace.
+	t.Setenv("CODEAGENT_POST_MESSAGE_DELAY", "0")
 	forceKillDelay.Store(0)
 
 	fake := newFakeCmd(fakeCmdConfig{
@@ -943,6 +945,7 @@ func TestRunCodexTask_DoesNotTerminateBeforeThreadCompleted(t *testing.T) {
 		t.Skip("skipping timing-sensitive integration test in short mode")
 	}
 	defer resetTestHooks()
+	t.Setenv("CODEAGENT_POST_MESSAGE_DELAY", "0")
 	forceKillDelay.Store(0)
 
 	fake := newFakeCmd(fakeCmdConfig{
@@ -1037,6 +1040,29 @@ func TestBackendParseArgs_NewMode(t *testing.T) {
 				t.Errorf("Backend = %v, want %v", cfg.Backend, tt.want.Backend)
 			}
 		})
+	}
+}
+
+func TestParseArgsTracksExplicitBackend(t *testing.T) {
+	previousArgs := os.Args
+	t.Cleanup(func() { os.Args = previousArgs })
+
+	os.Args = []string{"codeagent-wrapper", "task"}
+	implicit, err := parseArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if implicit.BackendExplicit {
+		t.Fatal("default backend must not be marked explicit")
+	}
+
+	os.Args = []string{"codeagent-wrapper", "--backend", "claude", "task"}
+	explicit, err := parseArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !explicit.BackendExplicit || explicit.Backend != "claude" {
+		t.Fatalf("got backend=%q explicit=%v", explicit.Backend, explicit.BackendExplicit)
 	}
 }
 
@@ -3055,7 +3081,7 @@ func TestVersionFlag(t *testing.T) {
 		}
 	})
 
-	want := "codeagent-wrapper version 5.15.0\n"
+	want := "codeagent-wrapper version 5.16.0\n"
 
 	if output != want {
 		t.Fatalf("output = %q, want %q", output, want)
@@ -3071,7 +3097,7 @@ func TestVersionShortFlag(t *testing.T) {
 		}
 	})
 
-	want := "codeagent-wrapper version 5.15.0\n"
+	want := "codeagent-wrapper version 5.16.0\n"
 
 	if output != want {
 		t.Fatalf("output = %q, want %q", output, want)
@@ -3087,7 +3113,7 @@ func TestVersionLegacyAlias(t *testing.T) {
 		}
 	})
 
-	want := "codex-wrapper version 5.15.0\n"
+	want := "codex-wrapper version 5.16.0\n"
 
 	if output != want {
 		t.Fatalf("output = %q, want %q", output, want)

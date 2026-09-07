@@ -21,6 +21,7 @@ type WebServer struct {
 	server   *http.Server
 	port     int
 	backend  string // Current backend name for single-panel display
+	lease    *browserLease
 }
 
 // SessionState tracks a running session
@@ -65,7 +66,7 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("/api/stream/", ws.handleStream)
 
 	// Listen on port 0 to get a random available port
-	listener, err := net.Listen("tcp", ":0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
@@ -92,6 +93,11 @@ func (ws *WebServer) Start() error {
 	// operator opt-in instead.
 	if shouldAutoOpenWebUI() {
 		go openBrowserFn(url)
+	} else if os.Getenv("CODEAGENT_WEB_UI_AUTO_OPEN") != "false" {
+		ws.lease, err = publishBrowserLease(ws.port)
+		if err != nil {
+			logWarn(fmt.Sprintf("Web UI browser companion unavailable: %v", err))
+		}
 	}
 
 	return nil
@@ -106,6 +112,7 @@ func (ws *WebServer) Stop() error {
 	if ws == nil || ws.server == nil {
 		return nil
 	}
+	ws.lease.close()
 
 	// Create a context with a short timeout for graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -443,7 +450,7 @@ func (ws *WebServer) generateIndexHTML() string {
                         liveIndicator.style.display = 'none';
                         const doneEl = document.createElement('div');
                         doneEl.className = 'done-indicator';
-                        doneEl.textContent = '✓ 完成 (3秒后自动关闭)';
+                        doneEl.textContent = '✓ 完成';
                         output.appendChild(doneEl);
 
                         // Force scroll to bottom on completion
@@ -452,19 +459,8 @@ func (ws *WebServer) generateIndexHTML() string {
 
                         es.close();
 
-                        // Browser notification
-                        if (Notification.permission === 'granted') {
-                            new Notification('任务完成', { body: '代码生成已完成' });
-                        }
-
-                        // Auto-close window after 3 seconds
-                        setTimeout(() => {
-                            window.close();
-                            // If window.close() fails (user-opened window), show message
-                            setTimeout(() => {
-                                doneEl.textContent = '✓ 完成 (可以关闭此页面)';
-                            }, 100);
-                        }, 3000);
+                        // Only the companion closes tabs it created. Manually
+                        // opened pages and parallel sessions remain intact.
                     }
                 };
                 es.onerror = () => {
