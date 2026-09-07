@@ -33,6 +33,8 @@ type SessionState struct {
 	Done      bool      `json:"done"`
 }
 
+var openBrowserFn = openBrowser
+
 // ContentEvent is sent to SSE clients
 type ContentEvent struct {
 	SessionID   string `json:"session_id"`
@@ -83,10 +85,20 @@ func (ws *WebServer) Start() error {
 		}
 	}()
 
-	// Auto-open browser
-	go openBrowser(url)
+	// A browser tab cannot reliably close itself once the short-lived task ends.
+	// Opening one per delegated task also interrupts the operator's active work,
+	// even on macOS where `open -g` requests background activation. Keep the URL
+	// visible for intentional inspection and make browser launch an explicit
+	// operator opt-in instead.
+	if shouldAutoOpenWebUI() {
+		go openBrowserFn(url)
+	}
 
 	return nil
+}
+
+func shouldAutoOpenWebUI() bool {
+	return os.Getenv("CODEAGENT_WEB_UI_AUTO_OPEN") == "true"
 }
 
 // Stop gracefully shuts down the web server

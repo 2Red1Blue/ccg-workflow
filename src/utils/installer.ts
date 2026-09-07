@@ -8,6 +8,7 @@ import { configureApiMartForCodex, removeApiMartFromCodex } from './installer-co
 import { PACKAGE_ROOT, injectConfigVariables, replaceHomePathsInTemplate } from './installer-template'
 import { readCcgConfig } from './config'
 import { installSkillCommands } from './skill-registry'
+import { installReviewSupervisor, uninstallReviewSupervisor } from './installer-review-supervisor'
 import { version as packageVersion } from '../../package.json'
 
 // ═══════════════════════════════════════════════════════
@@ -1106,6 +1107,13 @@ export async function installWorkflows(
   await installSkillGeneratedCommands(ctx)
   await installRuleFiles(ctx)
   await installBinaryFile(ctx)
+  try {
+    await installReviewSupervisor(ctx.installDir)
+  }
+  catch (error) {
+    ctx.result.errors.push(`Failed to install review supervisor: ${error}`)
+    ctx.result.success = false
+  }
 
   // ── Post-flight: validate installation produced results ──
   // Catch the case where all sub-steps silently returned empty
@@ -1161,6 +1169,14 @@ export async function uninstallWorkflows(installDir: string, options?: { preserv
   const rulesDir = join(installDir, 'rules')
   const binDir = join(installDir, 'bin')
   const ccgConfigDir = join(installDir, '.ccg')
+
+  try {
+    await uninstallReviewSupervisor(installDir)
+  }
+  catch (error) {
+    result.errors.push(`Failed to uninstall review supervisor: ${error}`)
+    result.success = false
+  }
 
   // Remove CCG commands directory
   try {
