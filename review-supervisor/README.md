@@ -29,17 +29,17 @@ automatic tabs; `true` explicitly selects the legacy system-browser opener.
 
 Run `ccg-agent-supervisor web-ui` to serve the read-only review center at
 `127.0.0.1:19876` (`--port` overrides it). In another terminal,
-`ccg-agent-supervisor web-url` prints the authenticated browser URL. Keep this
-URL private. The token is passed in a fragment and stored in that tab's session
-storage; API requests use an Authorization header. Restarting the server rotates
-the token, so reopen the printed URL afterward. No browser is opened automatically.
+`ccg-agent-supervisor web-url` prints the fixed browser URL. Open
+`http://127.0.0.1:19876/` directly in any local browser or tab; no access token,
+login, or browser storage is required. The address stays the same across service
+restarts. No browser is opened automatically.
 
 For a persistent macOS service, `print-webui-launchd-plist` prints a user LaunchAgent
 definition using the installed interpreter and command paths. Save it as
 `~/Library/LaunchAgents/com.ccg.review-ui.plist` and load it with `launchctl bootstrap`
 in your GUI user domain. It runs on login and restarts after failure, with no automatic
 browser opening. Unload it with `launchctl bootout` before removing that plist.
-Use `web-url` after each restart to obtain the current access URL.
+Use `web-url` to check the address when using a custom port.
 
 The page lists retained dual-review runs, project paths, execution states,
 aggregate verdicts, individual reports/partial reports, retry origins, durations,
@@ -57,9 +57,10 @@ start, retry, approve, cancel, or mutate a review.
 
 Only fixed metadata fields and the two reports are exposed, never raw bundles,
 stderr/stdout logs, settings or arbitrary files. Reports are rendered as text,
-not executable HTML. Requests require an exact loopback Host, same-origin browser
-context, and an API token; no CORS is enabled. The token protects against other
-websites, not other processes already running as your OS user. Common credential
+not executable HTML. Requests require an exact loopback Host; foreign Origin and
+cross-site/same-site Fetch Metadata requests are rejected, and no CORS is enabled.
+There is intentionally no authentication between local users or processes: this
+viewer is for a personal computer, not a shared or network-facing service. Common credential
 shapes are masked as a best effort; reports can still contain sensitive project
 content. Do not expose this server through a reverse proxy.
 

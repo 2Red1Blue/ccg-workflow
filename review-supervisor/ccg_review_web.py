@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import fcntl
-import hmac
 import json
 import math
 import os
 import re
-import secrets
 import signal
 import stat
 import threading
@@ -175,9 +173,8 @@ class ReviewServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, root, port=19876, token=None):
+    def __init__(self, root, port=19876):
         self.history = History(root)
-        self.token = token or secrets.token_urlsafe(32)
         self.slots = threading.BoundedSemaphore(8)
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
@@ -233,9 +230,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, asset_path(filename).read_bytes(), mime)
             except OSError:
                 return self.send(503, {"error": "Review Center asset unavailable"})
-        expected = "Bearer " + self.server.token
-        if not hmac.compare_digest(self.headers.get("Authorization", "").encode(), expected.encode()):
-            return self.send(401, {"error": "Open the URL printed by ccg-agent-supervisor web-url"})
         try:
             if path == "/api/runs":
                 return self.send(200, self.server.history.query())
@@ -251,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve(root: Path, port: int, write_receipt):
     server = ReviewServer(root, port)
     receipt = root / ".review-ui.json"
-    url = server.origin + "/#token=" + server.token
+    url = server.origin + "/"
     write_receipt(receipt, {"pid": os.getpid(), "url": url})
     print(f"CCG Review Center: {url}", flush=True)
     def stop(_signum, _frame):

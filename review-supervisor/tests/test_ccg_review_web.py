@@ -101,8 +101,8 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(row['started'], 0)
         self.assertEqual(row['state'], 'unknown')
 
-    def test_http_token_host_origin_and_route_boundary(self):
-        server = ReviewServer(self.root, port=0, token='fixture-secret')
+    def test_http_fixed_address_host_origin_and_route_boundary(self):
+        server = ReviewServer(self.root, port=0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
@@ -115,17 +115,16 @@ class HistoryTest(unittest.TestCase):
                 return response.status, dict(response.getheaders()), response.read()
             finally:
                 connection.close()
-        self.assertEqual(get('/api/runs')[0], 401)
-        auth = {'Authorization': 'Bearer fixture-secret'}
-        code, headers, data = get('/api/runs', auth)
+        code, headers, data = get('/api/runs')
         self.assertEqual(code, 200)
         self.assertEqual(len(json.loads(data)['runs']), 1)
         self.assertEqual(headers['Cache-Control'], 'no-store')
         self.assertNotIn('Access-Control-Allow-Origin', headers)
-        for extra in ({'Host':'attacker.example'}, {'Origin':'https://attacker.example'}, {'Sec-Fetch-Site':'cross-site'}):
-            self.assertEqual(get('/api/runs', auth | extra)[0], 403)
-        self.assertEqual(get('/api/runs/../status.json', auth)[0], 404)
-        self.assertEqual(get('/api/runs/' + ID, auth)[0], 200)
+        for extra in ({'Host':'attacker.example'}, {'Origin':'https://attacker.example'}, {'Sec-Fetch-Site':'cross-site'}, {'Sec-Fetch-Site':'same-site'}, {'Origin':'null'}):
+            self.assertEqual(get('/api/runs', extra)[0], 403)
+            self.assertEqual(get('/api/runs/' + ID, extra)[0], 403)
+        self.assertEqual(get('/api/runs/../status.json')[0], 404)
+        self.assertEqual(get('/api/runs/' + ID)[0], 200)
         for path in ('/', '/app.js', '/style.css'):
             code, headers, body = get(path)
             self.assertEqual(code, 200)
@@ -135,7 +134,7 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(headers['Content-Type'], 'image/webp')
         self.assertEqual(body[:4], b'RIFF')
-        self.assertEqual(get('/ccg-agent-supervisor.py', auth)[0], 404)
+        self.assertEqual(get('/ccg-agent-supervisor.py')[0], 404)
 
 
 if __name__ == '__main__':

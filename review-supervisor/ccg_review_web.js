@@ -1,8 +1,8 @@
 const $ = id => document.getElementById(id);
 const labels = {running:'执行中', succeeded:'执行成功', failed:'执行失败', timed_out:'执行超时', cancelled:'已取消', interrupted:'进程已中断', unknown:'状态未知', starting:'启动中', thinking:'处理中', answering:'生成报告', completed:'报告已收到', approved:'双路通过', changes:'需要修改', incomplete:'结果未齐', pending:'等待结论', partial:'部分报告', APPROVE:'通过', REQUEST_CHANGES:'需要修改'};
-const params = new URLSearchParams(location.hash.slice(1));
-let token = params.get('token') || sessionStorage.getItem('ccg-review-token') || '';
-if (params.has('token') && token) { sessionStorage.setItem('ccg-review-token', token); history.replaceState(null, '', location.pathname); }
+// Discard credentials left by the previous token-based viewer, if any.
+try { sessionStorage.removeItem('ccg-review-token'); } catch { /* Storage may be disabled. */ }
+if (new URLSearchParams(location.hash.slice(1)).has('token')) history.replaceState(null, '', location.pathname + location.search);
 let runs = [], selected = null, shown = 40, busy = false, lastDetail = '', lastList = '', selectedDetailSignature = '', collapsedReports = new Set();
 function el(tag, cls, text) { const node=document.createElement(tag); if(cls) node.className=cls; if(text!==undefined) node.textContent=text; return node; }
 const date = value => value ? new Date(value*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
@@ -12,7 +12,7 @@ function badge(value) { const tone=['changes','REQUEST_CHANGES'].includes(value)
 function syncFilterButtons(value) { document.querySelectorAll('[data-filter]').forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.filter===value))); }
 function applyFilter(value) { $('filter').value=value;shown=40;syncFilterButtons(value);lastList='';renderList(); document.querySelector('.history')?.scrollIntoView({behavior:'smooth',block:'start'}); }
 function clearDetail() { $('detail').replaceChildren(el('div','empty',undefined)); const empty=$('detail').firstElementChild;empty.append(el('span','empty-mark','[ … ]'),el('h2','', '选择一条审查'),el('p','', '历史记录将在这里呈现，两路报告各自保留。')); }
-async function api(path) { try { const response=await fetch(path,{headers:{Authorization:`Bearer ${token}`},cache:'no-store',signal:AbortSignal.timeout(8000)}); const data=await response.json(); if(!response.ok) throw Error(response.status===401?'访问凭证缺失或已过期。请在终端运行 ccg-agent-supervisor web-url，重新打开输出的地址。':data.error || '读取失败'); return data; } catch(error) { if(error.name==='TimeoutError') throw Error('审查数据请求超时，请稍后重试。'); throw error; } }
+async function api(path) { try { const response=await fetch(path,{cache:'no-store',signal:AbortSignal.timeout(8000)}); const data=await response.json(); if(!response.ok) throw Error(data.error || '读取失败'); return data; } catch(error) { if(error.name==='TimeoutError') throw Error('审查数据请求超时，请稍后重试。'); throw error; } }
 function renderList() {
   const query=$('search').value.trim().toLowerCase(), filter=$('filter').value;
   const filtered=runs.filter(row => `${row.workdir} ${row.id}`.toLowerCase().includes(query) && (filter==='all' || (filter==='running'?row.state==='running':row.verdict===filter)));
@@ -88,4 +88,3 @@ document.querySelectorAll('[data-filter]').forEach(node=>node.addEventListener('
 const poster=$('poster-toggle');poster.addEventListener('click',()=>{const focused=poster.classList.toggle('is-focused');poster.setAttribute('aria-pressed',String(focused));});
 document.addEventListener('keydown',event=>{const typing=['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName);if(event.key==='/'&&!typing&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&!event.shiftKey){event.preventDefault();$('search').focus();}else if(event.key.toLowerCase()==='r'&&!typing&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&!event.shiftKey)refresh();else if(event.key==='Escape'&&document.activeElement===$('search')){$('search').value='';shown=40;lastList='';renderList();}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});setInterval(()=>{if(!document.hidden)refresh();},3000);refresh();
-window.addEventListener('hashchange',()=>{const next=new URLSearchParams(location.hash.slice(1)).get('token');if(next){token=next;sessionStorage.setItem('ccg-review-token',token);history.replaceState(null,'',location.pathname);lastDetail='';refresh();}});

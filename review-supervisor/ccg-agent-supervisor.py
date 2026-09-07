@@ -1512,7 +1512,7 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("health", help="print retention and cleanup health")
     web = subparsers.add_parser("web-ui", help="serve read-only review history on 127.0.0.1")
     web.add_argument("--port", type=int, default=19876)
-    subparsers.add_parser("web-url", help="print the local review UI URL (contains its access token)")
+    subparsers.add_parser("web-url", help="print the fixed local review UI URL")
     web_plist = subparsers.add_parser("print-webui-launchd-plist", help="print a persistent macOS review UI agent; does not install it")
     web_plist.add_argument("--port", type=int, default=19876)
     subparsers.add_parser("print-launchd-plist", help="print a one-shot six-hour cleanup agent; does not install it")
@@ -1552,10 +1552,10 @@ def main() -> int:
         return serve(ensure_root(Path(args.root)), args.port, write_json_atomic)
     if args.command == "web-url":
         receipt = read_json(Path(args.root) / ".review-ui.json")
-        if not receipt or not isinstance(receipt.get("url"), str) or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}/#token=[A-Za-z0-9_-]+", receipt["url"]):
+        if not receipt or not isinstance(receipt.get("url"), str) or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}/(?:#token=[A-Za-z0-9_-]+)?", receipt["url"]):
             print("Review UI is not started. Run ccg-agent-supervisor web-ui", file=sys.stderr)
             return 1
-        print(receipt["url"])
+        print(receipt["url"].split("#", 1)[0])
         return 0
     if args.command == "run":
         return run_command(args)
