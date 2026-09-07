@@ -1008,7 +1008,7 @@ def review_command(args: argparse.Namespace) -> int:
                 "preflight": preflight,
                 "timeout_seconds": args.timeout_seconds,
                 "idle_timeout_seconds": args.idle_timeout_seconds,
-                "review_policy": {"revision": 3, "preflight": preflight,
+                "review_policy": {"revision": 4, "preflight": preflight,
                                   "claude_routing_sha256": sha256_bytes(json.dumps(routing, sort_keys=True).encode()),
                                   "runtime_sha256": sha256_path(Path(__file__).with_name("ccg_review_runtime.py")),
                                   "supervisor_sha256": sha256_path(Path(__file__))},
@@ -1089,6 +1089,13 @@ def review_command(args: argparse.Namespace) -> int:
                     reason = "hard_deadline"
                 elif args.idle_timeout_seconds and activity["idle_seconds"] >= args.idle_timeout_seconds:
                     reason = "idle_timeout"
+                elif (
+                    args.thinking_timeout_seconds
+                    and activity["phase"] == "thinking"
+                    and not activity["completion_received"]
+                    and activity["stalled_seconds"] >= args.thinking_timeout_seconds
+                ):
+                    reason = "thinking_timeout"
                 elif args.expect_claude_model and backend.name == "claude" and any(model != args.expect_claude_model for model in activity["actual_models"]):
                     reason = "model_mismatch"
                 if reason and backend.termination_at is None:
@@ -1096,7 +1103,7 @@ def review_command(args: argparse.Namespace) -> int:
                     backend.termination_at = current
                     if reason == "cancelled":
                         cancelled_names.add(backend.name)
-                    elif reason in ("hard_deadline", "idle_timeout"):
+                    elif reason in ("hard_deadline", "idle_timeout", "thinking_timeout"):
                         timed_out_names.add(backend.name)
                     signal_process_group(backend.process.pid, signal.SIGTERM)
                 elif backend.termination_at is not None and current >= backend.termination_at + 5:
@@ -1492,6 +1499,7 @@ def parse_args() -> argparse.Namespace:
     review.add_argument("--claude-model", default=os.environ.get("CCG_CLAUDE_REVIEW_MODEL"), help="explicit requested model; response model is recorded separately")
     review.add_argument("--expect-claude-model", help="require this exact response model; mismatch fails review")
     review.add_argument("--idle-timeout-seconds", type=int, default=180, help="maximum silence per backend; 0 disables, total timeout still applies")
+    review.add_argument("--thinking-timeout-seconds", type=int, default=120, help="maximum continuous thinking without text, tool, or final result; 0 disables")
     review.add_argument("--codex-cli", default=str(DEFAULT_CODEX))
     review.add_argument(
         "--codex-model",
@@ -1532,6 +1540,8 @@ def parse_args() -> argparse.Namespace:
             parser.error("--include-untracked requires --snapshot-base")
         if parsed.idle_timeout_seconds < 0:
             parser.error("--idle-timeout-seconds must be nonnegative")
+        if parsed.thinking_timeout_seconds < 0:
+            parser.error("--thinking-timeout-seconds must be nonnegative")
         if parsed.claude_transport == "auto":
             parsed.claude_transport = "stream" if Path(parsed.wrapper).resolve() == DEFAULT_WRAPPER.resolve() else "wrapper"
         if parsed.expect_claude_model and parsed.claude_transport != "stream":

@@ -94,9 +94,10 @@ class StreamReviewTest(unittest.TestCase):
         self.assertEqual(b['codex']['state'], 'succeeded')
         self.assertGreater(b['claude']['partial_report']['saved_bytes'], 0)
 
-    def test_heartbeat_prevents_idle_timeout(self):
-        result = self.review({'FAKE_STREAM_MODE':'heartbeat-success'}, ['--idle-timeout-seconds','1'])
-        self.assertEqual(result.returncode, 0, result.stderr.decode())
+    def test_thinking_only_stream_hits_progress_timeout_without_persisting_reasoning(self):
+        result = self.review({'FAKE_STREAM_MODE':'heartbeat-success'}, ['--idle-timeout-seconds','0', '--thinking-timeout-seconds','1'])
+        self.assertEqual(result.returncode, 124)
+        self.assertEqual(self.h._status()['backends']['claude']['termination_reason'], 'thinking_timeout')
         directory = next(self.h.run_root.glob('*/status.json')).parent
         for p in directory.iterdir():
             if p.is_file():

@@ -11,6 +11,7 @@ class ReviewActivity:
     def __init__(self):
         self.lock = threading.Lock()
         self.last_activity = time.monotonic()
+        self.last_progress = self.last_activity
         self.last_event_at = time.time()
         self.phase = "starting"
         self.events = 0
@@ -19,10 +20,12 @@ class ReviewActivity:
         self.completed = False
         self.protocol_error = None
 
-    def touch(self, phase=None):
+    def touch(self, phase=None, progress=False):
         with self.lock:
             self.last_activity = time.monotonic()
             self.last_event_at = time.time()
+            if progress:
+                self.last_progress = self.last_activity
             if phase:
                 self.phase = phase
 
@@ -40,6 +43,7 @@ class ReviewActivity:
                 "phase": self.phase,
                 "last_event_at_epoch": self.last_event_at,
                 "idle_seconds": round(time.monotonic() - self.last_activity, 3),
+                "stalled_seconds": round(time.monotonic() - self.last_progress, 3),
                 "event_count": self.events,
                 "session_id": self.session_id,
                 "actual_models": sorted(self.models),
@@ -101,11 +105,11 @@ def collect_claude_events(source, report, partial, activity, event_limit=2 * 102
                     if isinstance(text, str):
                         partial.write(text.encode())
                         streamed_text = True
-                    activity.touch("answering")
+                    activity.touch("answering", progress=True)
                 elif delta.get("type") == "thinking_delta":
                     activity.touch("thinking")
                 elif typ == "content_block_start" and inner.get("content_block", {}).get("type") == "tool_use":
-                    activity.touch("tool_use")
+                    activity.touch("tool_use", progress=True)
             elif kind == "assistant":
                 message = event.get("message", {})
                 model = message.get("model")
@@ -116,8 +120,9 @@ def collect_claude_events(source, report, partial, activity, event_limit=2 * 102
                         if not isinstance(text, str):
                             raise ValueError("assistant text is not a string")
                         partial.write(text.encode())
+                        activity.touch("answering", progress=True)
                     elif block.get("type") == "tool_use":
-                        activity.touch("tool_use")
+                        activity.touch("tool_use", progress=True)
                 streamed_text = False
             elif kind == "result":
                 with activity.lock:
@@ -131,7 +136,7 @@ def collect_claude_events(source, report, partial, activity, event_limit=2 * 102
                     if not isinstance(result, str):
                         raise ValueError("result text missing")
                     report.write(result.encode())
-                activity.touch("completed")
+                activity.touch("completed", progress=True)
         except (ValueError, TypeError, AttributeError) as exc:
             with activity.lock:
                 activity.protocol_error = "invalid_stream_event:" + type(exc).__name__
