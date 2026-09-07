@@ -15,6 +15,7 @@ import heapq
 import hashlib
 import json
 import os
+import plistlib
 import re
 import select
 import shutil
@@ -1509,8 +1510,15 @@ def parse_args() -> argparse.Namespace:
     status = subparsers.add_parser("status", help="print a completed run state")
     status.add_argument("run_id")
     subparsers.add_parser("health", help="print retention and cleanup health")
+    web = subparsers.add_parser("web-ui", help="serve read-only review history on 127.0.0.1")
+    web.add_argument("--port", type=int, default=19876)
+    subparsers.add_parser("web-url", help="print the local review UI URL (contains its access token)")
+    web_plist = subparsers.add_parser("print-webui-launchd-plist", help="print a persistent macOS review UI agent; does not install it")
+    web_plist.add_argument("--port", type=int, default=19876)
     subparsers.add_parser("print-launchd-plist", help="print a one-shot six-hour cleanup agent; does not install it")
     parsed = parser.parse_args()
+    if parsed.command in ("web-ui", "print-webui-launchd-plist") and not 0 <= parsed.port <= 65535:
+        parser.error("--port must be between 0 and 65535")
     if parsed.command in ("run", "review") and parsed.timeout_seconds <= 0:
         parser.error("--timeout-seconds must be positive")
     if parsed.command == "review" and parsed.diff_file and parsed.base:
@@ -1533,6 +1541,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.command == "print-webui-launchd-plist":
+        plist = {"Label": "com.ccg.review-ui", "ProgramArguments": [sys.executable, str(Path(__file__).resolve()), "--root", str(Path(args.root).expanduser().resolve()), "web-ui", "--port", str(args.port)],
+                 "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Background", "ThrottleInterval": 30,
+                 "StandardOutPath": "/dev/null", "StandardErrorPath": "/dev/null"}
+        sys.stdout.buffer.write(plistlib.dumps(plist))
+        return 0
+    if args.command == "web-ui":
+        from ccg_review_web import serve
+        return serve(ensure_root(Path(args.root)), args.port, write_json_atomic)
+    if args.command == "web-url":
+        receipt = read_json(Path(args.root) / ".review-ui.json")
+        if not receipt or not isinstance(receipt.get("url"), str) or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}/#token=[A-Za-z0-9_-]+", receipt["url"]):
+            print("Review UI is not started. Run ccg-agent-supervisor web-ui", file=sys.stderr)
+            return 1
+        print(receipt["url"])
+        return 0
     if args.command == "run":
         return run_command(args)
     if args.command == "review":

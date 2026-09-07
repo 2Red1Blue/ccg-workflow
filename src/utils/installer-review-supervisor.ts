@@ -9,6 +9,10 @@ const BACKUP_LIMIT = 3
 const FILES = [
   { source: 'ccg-agent-supervisor.py', target: 'ccg-agent-supervisor', mode: 0o700 },
   { source: 'ccg_review_runtime.py', target: 'ccg_review_runtime.py', mode: 0o600 },
+  { source: 'ccg_review_web.py', target: 'ccg_review_web.py', mode: 0o600 },
+  { source: 'ccg_review_web.html', target: 'ccg_review_web.html', mode: 0o600 },
+  { source: 'ccg_review_web.js', target: 'ccg_review_web.js', mode: 0o600 },
+  { source: 'ccg_review_web.css', target: 'ccg_review_web.css', mode: 0o600 },
 ] as const
 
 interface Manifest {

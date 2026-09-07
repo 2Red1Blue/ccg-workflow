@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CCG · 审查中心</title><link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><a href="/" class="brand">ccg<span> / review center</span></a><span class="connection" id="connection" role="status">连接中</span></header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">LOCAL OBSERVATORY / 01</p><h1>让每次审查，都有迹可循。</h1><p class="subtitle">两个视角，一份可追溯的记录。查看执行过程，回到具体结论。</p></div><button id="refresh" class="refresh">刷新记录 ↻</button></section>
+    <div id="error" role="alert" hidden></div>
+    <section class="stats" aria-label="审查概况">
+      <div><span>保留记录</span><strong id="total">—</strong></div><div><span>正在执行</span><strong id="running">—</strong></div><div><span>需要修改</span><strong id="changes">—</strong></div><div><span>结果未齐</span><strong id="incomplete">—</strong></div>
+    </section>
+    <div class="workspace">
+      <aside class="history"><div class="section-title"><h2>审查历史</h2><span id="count"></span></div>
+        <label for="search" class="sr-only">搜索项目或审查 ID</label><input id="search" type="search" placeholder="搜索项目 / 审查 ID" autocomplete="off">
+        <label for="filter" class="sr-only">筛选审查状态</label><select id="filter"><option value="all">全部记录</option><option value="running">正在执行</option><option value="approved">双路通过</option><option value="changes">需要修改</option><option value="incomplete">结果未齐 / 执行异常</option></select>
+        <nav id="runs" aria-label="审查记录"></nav><button id="more" hidden>显示更多</button>
+      </aside>
+      <section id="detail" class="detail" aria-label="审查详情"><div class="empty"><span class="empty-mark">[ … ]</span><h2>选择一条审查</h2><p>历史记录将在这里呈现，两路报告各自保留。</p></div></section>
+    </div>
+    <footer>只读 · 仅本机访问 · 页面每 3 秒刷新，隐藏时暂停。展示 supervisor 当前保留的数据；已清理的记录不会恢复。<br>执行成功不等于审查通过。报告可能包含项目内容，请谨慎复制和分享。</footer>
+  </main>
+</body></html>
