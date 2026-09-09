@@ -1,0 +1,12 @@
+{
+  "id": "canonical-task-analysis",
+  "title": "统一任务身份与持久化双模型分析",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "medium",
+  "domain": "tooling",
+  "currentPhase": "completed",
+  "nextAction": "Implemented, tested, cross-reviewed and installed locally",
+  "createdAt": "2026-09-09T22:35:49.550621+08:00",
+  "branch": "codex/review-supervisor"
+}
