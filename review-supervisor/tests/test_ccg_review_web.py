@@ -44,6 +44,20 @@ class HistoryTest(unittest.TestCase):
         self.save()
         self.assertEqual(self.history.query(ID)['verdict'], 'incomplete')
 
+    def test_analysis_is_visible_without_claiming_review_approval(self):
+        self.meta['mode'] = 'dual_leaf_analysis'
+        self.meta['context_bytes'] = 2048
+        for row in self.meta['backends'].values():
+            row['verdict'] = None
+        self.save()
+        result = self.history.query(ID)
+        self.assertEqual(result['mode'], 'dual_leaf_analysis')
+        self.assertEqual(result['verdict'], 'analyzed')
+        self.assertEqual(result['patch_bytes'], 2048)
+        self.meta['backends']['claude']['state'] = 'failed'
+        self.save()
+        self.assertEqual(self.history.query(ID)['verdict'], 'incomplete')
+
     def test_actual_model_partial_report_and_no_arbitrary_files(self):
         self.meta['backends']['claude']['activity'] = {'actual_models': ['glm-5-3-flash']}
         self.meta['preflight'] = {'codex_review_model': 'gpt-example', 'api_key': 'PRIVATE'}

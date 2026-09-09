@@ -8,6 +8,8 @@ import { PACKAGE_ROOT } from './installer-template'
 const BACKUP_LIMIT = 3
 const FILES = [
   { source: 'ccg-agent-supervisor.py', target: 'ccg-agent-supervisor', mode: 0o700 },
+  { source: 'ccg-task.py', target: 'ccg-task', mode: 0o700 },
+  { source: 'ccg_task_router.py', target: 'ccg_task_router.py', mode: 0o600 },
   { source: 'ccg_review_runtime.py', target: 'ccg_review_runtime.py', mode: 0o600 },
   { source: 'ccg_review_web.py', target: 'ccg_review_web.py', mode: 0o600 },
   { source: 'ccg_review_web.html', target: 'ccg_review_web.html', mode: 0o600 },

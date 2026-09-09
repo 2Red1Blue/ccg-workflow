@@ -61,6 +61,8 @@
     "templates/skills/",
     "templates/rules/",
     "review-supervisor/ccg-agent-supervisor.py",
+    "review-supervisor/ccg_task_router.py",
+    "review-supervisor/ccg-task.py",
     "review-supervisor/ccg_review_runtime.py",
     "review-supervisor/ccg_review_web.py",
     "review-supervisor/ccg_review_web.html",

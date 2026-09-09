@@ -82,3 +82,64 @@ python3 -m unittest discover -s review-supervisor/tests -p 'test_*.py'
 
 The installed command is documented by `~/.claude/docs/ccg-review-supervisor.md`.
 That local document and review receipts are intentionally not package inputs.
+
+## Durable analysis and canonical tasks
+
+`ccg-task` is the packaged task router. The package source is
+`ccg_task_router.py`; a workspace may retain a synchronized `task_router.py`
+copy for existing Trellis consumers. Routing stays explicit: a selected root
+with `.trellis/workflow.md` owns Trellis tasks, otherwise it owns CCG tasks.
+
+```sh
+ccg-task ensure --scope project --project-root "$PWD" \
+  --title 'Canonical task lifecycle' --slug canonical-task-lifecycle
+ccg-task write --task-dir '<returned taskDir>' \
+  --document requirements --content-file requirements-input.md
+ccg-task update --task-dir '<returned taskDir>' \
+  --phase implementation --next-action 'Implement the accepted design'
+ccg-task doctor --scope project --project-root "$PWD"
+```
+
+Keep the returned task identity and directory unchanged. `ensure` reuses only
+the same selected root/provider, exact slug and exact title; a title mismatch
+is an error. `--ccg-meta` supplies initial values only and is deliberately ignored
+when reusing an existing task, so a resumed call cannot reset its current phase,
+risk, branch or other metadata. Mutable orchestration fields are changed explicitly
+through `update`. No whitespace/case normalization or fuzzy matching is applied.
+`write` and `update`
+validate an existing task and never create a guessed directory. `doctor` reports
+orphan/incomplete records without deleting them. A timed-out or failed Trellis
+create leaves a router-owned pending marker and requires explicit recovery;
+retries cannot mislabel partially completed native creation as success. Different slugs may represent
+different tasks; fuzzy name matching is deliberately not an identity policy.
+Task mutations currently require POSIX flock (macOS/Linux); unsupported hosts
+return `TASK_LOCK_UNSUPPORTED` instead of silently omitting concurrency protection.
+
+One task can have multiple analysis/review runs. Use the existing supervisor
+instead of shell fan-out and scanning `/tmp` for `claude.txt`:
+
+```sh
+ccg-agent-supervisor analyze --workdir "$PWD" \
+  --task-dir '<returned taskDir>' \
+  --context-file requirements-input.md --context-file src/relevant.py \
+  < analysis-request.md
+ccg-agent-supervisor status '<returned run_id>'
+```
+
+The current Harness selects bounded context and owns decisions. Each run records
+its task association, both backend outcomes, actual reported models and report
+paths. Reports use `Options`, `Recommendation`, `Risks`, `Validation`; analysis
+has no approval verdict. Missing sections, partial output, timeout or a failed
+backend cannot count as completed analysis. Raw context is removed at termination;
+reports and receipts follow the existing bounded retention policy.
+
+Retry using the identical request, context and task plus `--retry-run <run_id>`.
+Only successful, intact reports from the same operation/identity can be reused.
+Review and analysis results never substitute for one another. The history UI
+labels completed analysis separately from review approval.
+
+This design uses explicit identity rather than inferred similarity, following
+[Amazon's idempotent API guidance](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/),
+and distinguishes task intent from a run as in
+[Temporal's Workflow ID and Run ID model](https://github.com/temporalio/documentation/blob/main/docs/encyclopedia/workflow/workflow-execution/workflowid-runid.mdx).
+No new orchestration service is required.

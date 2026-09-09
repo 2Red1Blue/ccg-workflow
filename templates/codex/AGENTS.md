@@ -41,33 +41,28 @@ L+ + 任意  → 双模型并行分析，制定 plan.md，spawn 子 Agent 并行
 
 ### 创建步骤
 
+优先使用安装器提供的统一任务入口；项目有 task_router 时复用该入口。不要手工 mkdir 一个近似名称的任务目录。
+
 ```bash
-# 1. 生成任务名（用户需求 → kebab-case）
-TASK_NAME="add-jwt-auth"  # 示例
-
-# 2. 创建目录
-mkdir -p .ccg/tasks/$TASK_NAME
-
-# 3. 写 task.json
-cat > .ccg/tasks/$TASK_NAME/task.json << 'TASKJSON'
-{
-  "id": "add-jwt-auth",
-  "title": "用户请求摘要",
-  "status": "in_progress",
-  "complexity": "M",
-  "risk": "medium",
-  "domain": "backend",
-  "currentPhase": "analysis",
-  "nextAction": "分析需求",
-  "createdAt": "2026-05-17T10:00:00Z",
-  "branch": "main"
-}
-TASKJSON
+~/.claude/bin/ccg-task ensure --scope project --project-root "$PWD" \
+  --title "用户请求摘要" --slug "add-jwt-auth" \
+  --ccg-meta '{"complexity":"M","risk":"medium","domain":"backend"}'
 ```
+
+保存返回的 `taskId`、`taskDir` 并逐字复用。恢复任务沿用原始 slug，相同身份的 ensure 返回同一目录；新目标才使用新 slug。不根据标题相似度自动合并。
+
+写文档只使用已存在的任务目录，禁止重新拼目录名：
+
+```bash
+~/.claude/bin/ccg-task write --task-dir "<returned taskDir>" \
+  --document requirements --content-file "<prepared requirements file>"
+```
+
+Trellis 是所选根目录的任务 owner 时，统一入口使用 Trellis 任务并映射其文档和 meta.ccg，不另建 CCG 任务。doctor 只检查孤立/不完整目录，不自动迁移删除。
 
 ### 阶段推进
 
-每完成一个阶段，更新 task.json 中的 `currentPhase` 和 `nextAction`：
+每完成一个阶段，使用 `ccg-task update --task-dir "<returned taskDir>" --phase <phase> --next-action "..."` 更新 provider 对应字段：
 - `"analysis"` → 分析中
 - `"planning"` → 规划中（L+ 复杂度才有）
 - `"implementation"` → 实施中
@@ -87,7 +82,7 @@ TASKJSON
 ```bash
 # 移动到归档目录
 mkdir -p .ccg/tasks/archive/$(date +%Y-%m)
-mv .ccg/tasks/$TASK_NAME .ccg/tasks/archive/$(date +%Y-%m)/
+mv "<returned taskDir>" "<returned tasksDir>/archive/$(date +%Y-%m)/"
 
 # 提交归档
 git add .ccg/tasks/
@@ -124,29 +119,22 @@ ls .ccg/spec/ 2>/dev/null
 
 ## 4. Calling External Models — 调用模板
 
-### ⛔ 默认调用方式：双模型并行（M+ 复杂度必须用这个）
+### 默认双模型分析：持久化运行
+
+M+ 分析通过现有 supervisor 一次启动 Codex 和 Claude 两个 leaf：
 
 ```bash
-~/.claude/bin/codeagent-wrapper --progress --backend {{FRONTEND_PRIMARY}} - "$(pwd)" <<'FRONTEND_EOF'
-ROLE_FILE: ~/.claude/.ccg/prompts/{{FRONTEND_PRIMARY}}/$ROLE.md
-<TASK>
-{任务描述 + 上下文}
-</TASK>
-OUTPUT: {期望输出格式}
-FRONTEND_EOF
-&
-~/.claude/bin/codeagent-wrapper --progress --backend claude - "$(pwd)" <<'CLAUDE_EOF'
-ROLE_FILE: ~/.claude/.ccg/prompts/claude/$ROLE.md
-<TASK>
-{任务描述 + 上下文}
-</TASK>
-OUTPUT: {期望输出格式}
-CLAUDE_EOF
-&
-wait
+~/.claude/bin/ccg-agent-supervisor analyze --workdir "$PWD" \
+  --task-dir "<returned taskDir>" \
+  --context-file "<requirements file>" --context-file "<relevant source file>" \
+  < "<analysis request file>"
 ```
 
-**M+ 复杂度时，分析和审查都用上面这个双模型并行模板。不要只调一个。**
+主 Harness 先选取相关源码、约束和需求作为有界上下文。结果按 Options / Recommendation / Risks / Validation 返回；不足时由主 Harness 补齐上下文，再开启新的分析 run。
+
+保存返回的 `run_id`。终态报告由命令直接输出，也可用 `status <run_id>` 定位，禁止 `ls -td /tmp/*` 猜测本轮结果；无需自己管理 codex.txt/claude.txt 或 shell `&`/`wait`。失败时保持相同 request/context/task 使用 `--retry-run <run_id>`，仅复用内容一致且成功的 leaf。
+
+两个 leaf 都完成才算分析完成；分析成功不是代码审查通过。审查仍使用第 6 节的 review 命令。
 
 ### 单模型调用（仅 S 复杂度可用）
 
@@ -176,7 +164,7 @@ EOF
 `analyzer` / `architect` / `reviewer` / `debugger` / `tester` / `optimizer` / `builder`
 
 ### 并行调用提醒
-M+ 复杂度的分析和审查，使用上方的"双模型并行"模板。不要分开调用，用 `&` + `wait` 并行执行。
+M+ 分析使用 `supervisor analyze`，最终审查使用 `supervisor review`；两者内部并行启动两个 leaf，不在宿主层重写进程回收逻辑。
 
 ## 5. Implementation — 写代码
 

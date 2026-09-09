@@ -174,6 +174,14 @@ print("## Critical\nNone\n## Warning\nNone\n## Info\nFake Claude review\n## Verd
 
 
 class SupervisorReviewTest(unittest.TestCase):
+    def test_review_report_validation_entrypoint_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "review.md"
+            path.write_text("## Critical\nNone\n## Warning\nNone\n## Info\nNone\n## Verdict\nAPPROVE\n")
+            self.assertEqual(("APPROVE", None), supervisor.validate_review_report(path))
+            path.write_text("## Options\nA\n## Recommendation\nA\n## Risks\nNone\n## Validation\nTest\n")
+            self.assertIsNotNone(supervisor.validate_review_report(path)[1])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

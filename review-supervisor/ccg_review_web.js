@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const labels = {running:'执行中', succeeded:'执行成功', failed:'执行失败', timed_out:'执行超时', cancelled:'已取消', interrupted:'进程已中断', unknown:'状态未知', starting:'启动中', thinking:'处理中', answering:'生成报告', completed:'报告已收到', approved:'双路通过', changes:'需要修改', incomplete:'结果未齐', pending:'等待结论', partial:'部分报告', APPROVE:'通过', REQUEST_CHANGES:'需要修改'};
+const labels = {running:'执行中', succeeded:'执行成功', failed:'执行失败', timed_out:'执行超时', cancelled:'已取消', interrupted:'进程已中断', unknown:'状态未知', starting:'启动中', thinking:'处理中', answering:'生成报告', completed:'报告已收到', analyzed:'分析已完成', approved:'双路通过', changes:'需要修改', incomplete:'结果未齐', pending:'等待结论', partial:'部分报告', APPROVE:'通过', REQUEST_CHANGES:'需要修改'};
 // Discard credentials left by the previous token-based viewer, if any.
 try { sessionStorage.removeItem('ccg-review-token'); } catch { /* Storage may be disabled. */ }
 if (new URLSearchParams(location.hash.slice(1)).has('token')) history.replaceState(null, '', location.pathname + location.search);

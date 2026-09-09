@@ -85,7 +85,7 @@ class History:
                 meta = obj(json.loads(raw or "null"))
             except (ValueError, RecursionError):
                 return None
-            if not meta or meta.get("mode") != "dual_leaf_review":
+            if not meta or meta.get("mode") not in ("dual_leaf_review", "dual_leaf_analysis"):
                 return None
             state = meta.get("state", "unknown")
             if not isinstance(state, str) or state not in {"running", "succeeded", "failed", "timed_out", "cancelled"}:
@@ -104,11 +104,12 @@ class History:
                     state = "unknown"
             result = {
                 "id": run_id, "state": state,
+                "mode": meta["mode"],
                 "workdir": safe_text(meta.get("workdir")),
                 "started": numeric(meta.get("started_at_epoch")),
                 "finished": numeric(meta.get("finished_at_epoch")),
                 "retry_of": meta.get("retry_of") if RUN_ID.fullmatch(str(meta.get("retry_of", ""))) else None,
-                "patch_bytes": numeric(meta.get("patch_bytes")),
+                "patch_bytes": numeric(meta.get("context_bytes") if meta["mode"] == "dual_leaf_analysis" else meta.get("patch_bytes")),
                 "error": safe_text(meta.get("supervisor_error")),
                 "backends": {},
             }
@@ -138,7 +139,9 @@ class History:
                     row["partial"] = not report and bool(partial)
                 result["backends"][name] = row
             rows = list(result["backends"].values())
-            if state != "running" and any(r["verdict"] == "REQUEST_CHANGES" for r in rows):
+            if meta["mode"] == "dual_leaf_analysis":
+                result["verdict"] = ("analyzed" if state == "succeeded" and all(r["state"] == "succeeded" for r in rows) else "pending" if state == "running" else "incomplete")
+            elif state != "running" and any(r["verdict"] == "REQUEST_CHANGES" for r in rows):
                 result["verdict"] = "changes"
             elif state == "succeeded" and all(r["state"] == "succeeded" and r["verdict"] == "APPROVE" for r in rows):
                 result["verdict"] = "approved"
