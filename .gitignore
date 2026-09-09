@@ -63,3 +63,6 @@ FINAL_VERIFICATION.md
 *.tgz
 .codegraph/
 coverage/
+
+# Local CCG task state
+.ccg/tasks/

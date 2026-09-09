@@ -1,0 +1,12 @@
+{
+  "id": "claude-leaf-bundle-tools",
+  "title": "Claude leaf review reads bundle with tools",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "general",
+  "currentPhase": "completed",
+  "nextAction": "Implemented and installed; tests and live tool reads passed. Review disagreement and timeout retained in review.md.",
+  "createdAt": "2026-09-10",
+  "branch": "pending"
+}

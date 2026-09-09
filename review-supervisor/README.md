@@ -9,6 +9,16 @@ after a terminal result.
 records only final reports, partial answer text, progress metadata, and actual
 response model IDs; it deliberately excludes reasoning and tool payloads.
 
+Direct Claude review and analysis use `Read`, `Grep`, and `Glob` to inspect
+`REQUEST.md` and `CHANGES.patch` or `CONTEXT.md` inside the run bundle. Initial
+stdin contains only leaf instructions; request and source bodies stay in files.
+The prompt requests searches and ranged reads for large inputs. These tools
+are preapproved with `dontAsk`; shell, editing, delegation, and MCP tools are
+not enabled. The tool allowlist limits capabilities, not filesystem access:
+bundle-only reading is an instruction, not an OS-enforced read sandbox.
+Existing byte caps and timeouts remain; there is no additional token budget.
+Policy revision 5 prevents retries from reusing the previous inline-input policy.
+
 The installer deploys these files to `~/.claude/bin/` as:
 
 ```text

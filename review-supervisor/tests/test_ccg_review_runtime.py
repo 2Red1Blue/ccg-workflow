@@ -19,7 +19,7 @@ import json, os, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 if args == ['--help']:
- print('--output-format --include-partial-messages --strict-mcp-config --mcp-config --setting-sources --system-prompt --verbose --tools --effort --model --disable-slash-commands')
+ print('--output-format --include-partial-messages --strict-mcp-config --mcp-config --setting-sources --system-prompt --verbose --tools --allowedTools --permission-mode --effort --model --disable-slash-commands')
  raise SystemExit(0)
 if args == ['--version']:
  print('Claude fake 1.0')
@@ -27,7 +27,11 @@ if args == ['--version']:
 sync = Path(os.environ['TEST_SYNC_DIR'])
 (sync / 'claude.started').write_text('started')
 (sync / 'claude.args').write_text(json.dumps(args))
-sys.stdin.read()
+prompt = sys.stdin.read()
+(sync / 'claude.prompt').write_text(prompt)
+assert Path('REQUEST.md').is_file()
+assert Path('CHANGES.patch').is_file()
+(sync / 'claude.input-size').write_text(str(Path('CHANGES.patch').stat().st_size))
 def emit(e):
  print(json.dumps(e), flush=True)
 emit({'type':'system','subtype':'init','session_id':'fake-session','model':'alias'})
@@ -79,7 +83,22 @@ class StreamReviewTest(unittest.TestCase):
         self.assertFalse(b['model_verified'])
         args = json.loads((self.h.sync/'claude.args').read_text())
         self.assertEqual(args[args.index('--model')+1], 'requested-alias')
-        self.assertEqual(args[args.index('--tools')+1], '')
+        self.assertEqual(args[args.index('--tools')+1], 'Read,Grep,Glob')
+        self.assertEqual(args[args.index('--allowedTools')+1], 'Read,Grep,Glob')
+        self.assertEqual(args[args.index('--permission-mode')+1], 'dontAsk')
+        self.assertEqual(args[args.index('--setting-sources')+1], '')
+        self.assertEqual(json.loads(args[args.index('--mcp-config')+1]), {'mcpServers': {}})
+
+    def test_large_input_stays_in_bundle_not_initial_prompt(self):
+        self.h.patch.write_text('BUNDLE_ONLY_MARKER\n' * 100000)
+        result = self.review()
+        self.assertEqual(0, result.returncode, result.stderr.decode())
+        prompt = (self.h.sync/'claude.prompt').read_text()
+        self.assertNotIn('BUNDLE_ONLY_MARKER', prompt)
+        self.assertIn('Read REQUEST.md first', prompt)
+        self.assertIn('offset/limit', prompt)
+        self.assertLess(len(prompt.encode()), 4096)
+        self.assertGreater(int((self.h.sync/'claude.input-size').read_text()), 1_500_000)
 
     def test_model_mismatch_fails_even_if_result_arrives_before_poll(self):
         result = self.review(extra=['--expect-claude-model','wanted-model'])
@@ -116,7 +135,7 @@ class StreamReviewTest(unittest.TestCase):
         self.assertFalse(backend['activity']['completion_received'])
 
     def test_active_generation_still_has_hard_deadline(self):
-        result = self.review({'FAKE_STREAM_MODE':'active'}, ['--idle-timeout-seconds','1'], timeout=2)
+        result = self.review({'FAKE_STREAM_MODE':'active'}, ['--idle-timeout-seconds','1'], timeout=4)
         self.assertEqual(result.returncode, 124)
         self.assertEqual(self.h._status()['backends']['claude']['termination_reason'], 'hard_deadline')
 
@@ -145,7 +164,7 @@ class StreamReviewTest(unittest.TestCase):
     def test_settings_credentials_are_forwarded_without_hooks_or_leaking(self):
         settings = self.h.root/'settings.json'
         settings.write_text(json.dumps({'env':{'ANTHROPIC_AUTH_TOKEN':'fixture-only-secret', 'UNRELATED_VALUE':'not-forwarded'}, 'hooks':{'invalid':'must-not-load'}}))
-        self.claude.write_text(FAKE_CLAUDE.replace("sys.stdin.read()", "assert os.environ.get('ANTHROPIC_AUTH_TOKEN') == 'fixture-only-secret'\nassert 'UNRELATED_VALUE' not in os.environ\nsys.stdin.read()"))
+        self.claude.write_text(FAKE_CLAUDE.replace("prompt = sys.stdin.read()", "assert os.environ.get('ANTHROPIC_AUTH_TOKEN') == 'fixture-only-secret'\nassert 'UNRELATED_VALUE' not in os.environ\nprompt = sys.stdin.read()"))
         result = self.review()
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertNotIn(b'fixture-only-secret', result.stdout+result.stderr)
