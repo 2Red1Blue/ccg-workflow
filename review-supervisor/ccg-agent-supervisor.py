@@ -1091,11 +1091,11 @@ def review_command(args: argparse.Namespace) -> int:
                     reason = "idle_timeout"
                 elif (
                     args.thinking_timeout_seconds
-                    and activity["phase"] == "thinking"
+                    and backend.stream_json
                     and not activity["completion_received"]
                     and activity["stalled_seconds"] >= args.thinking_timeout_seconds
                 ):
-                    reason = "thinking_timeout"
+                    reason = "progress_timeout"
                 elif args.expect_claude_model and backend.name == "claude" and any(model != args.expect_claude_model for model in activity["actual_models"]):
                     reason = "model_mismatch"
                 if reason and backend.termination_at is None:
@@ -1103,7 +1103,7 @@ def review_command(args: argparse.Namespace) -> int:
                     backend.termination_at = current
                     if reason == "cancelled":
                         cancelled_names.add(backend.name)
-                    elif reason in ("hard_deadline", "idle_timeout", "thinking_timeout"):
+                    elif reason in ("hard_deadline", "idle_timeout", "progress_timeout"):
                         timed_out_names.add(backend.name)
                     signal_process_group(backend.process.pid, signal.SIGTERM)
                 elif backend.termination_at is not None and current >= backend.termination_at + 5:

@@ -31,6 +31,11 @@ sys.stdin.read()
 def emit(e):
  print(json.dumps(e), flush=True)
 emit({'type':'system','subtype':'init','session_id':'fake-session','model':'alias'})
+if os.environ.get('FAKE_STREAM_MODE') == 'init-heartbeat':
+ for i in range(60):
+  emit({'type':'system','subtype':'heartbeat','session_id':'fake-session'})
+  time.sleep(.1)
+ raise SystemExit(0)
 emit({'type':'assistant','message':{'model':os.environ.get('FAKE_MODEL','actual-model'),'content':[]}})
 emit({'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':'Partial finding'}}})
 mode = os.environ.get('FAKE_STREAM_MODE')
@@ -97,11 +102,18 @@ class StreamReviewTest(unittest.TestCase):
     def test_thinking_only_stream_hits_progress_timeout_without_persisting_reasoning(self):
         result = self.review({'FAKE_STREAM_MODE':'heartbeat-success'}, ['--idle-timeout-seconds','0', '--thinking-timeout-seconds','1'])
         self.assertEqual(result.returncode, 124)
-        self.assertEqual(self.h._status()['backends']['claude']['termination_reason'], 'thinking_timeout')
+        self.assertEqual(self.h._status()['backends']['claude']['termination_reason'], 'progress_timeout')
         directory = next(self.h.run_root.glob('*/status.json')).parent
         for p in directory.iterdir():
             if p.is_file():
                 self.assertNotIn(b'PRIVATE REASONING', p.read_bytes())
+
+    def test_initialized_heartbeat_stream_hits_progress_timeout(self):
+        result = self.review({'FAKE_STREAM_MODE':'init-heartbeat'}, ['--idle-timeout-seconds','0', '--thinking-timeout-seconds','1'])
+        self.assertEqual(result.returncode, 124)
+        backend = self.h._status()['backends']['claude']
+        self.assertEqual(backend['termination_reason'], 'progress_timeout')
+        self.assertFalse(backend['activity']['completion_received'])
 
     def test_active_generation_still_has_hard_deadline(self):
         result = self.review({'FAKE_STREAM_MODE':'active'}, ['--idle-timeout-seconds','1'], timeout=2)
