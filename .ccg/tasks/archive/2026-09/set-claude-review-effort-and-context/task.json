@@ -1,0 +1,12 @@
+{
+  "id": "set-claude-review-effort-and-context",
+  "title": "Set Claude review effort low and narrow analysis context",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "tooling",
+  "currentPhase": "completed",
+  "nextAction": "Implemented, installed, tested, dual-reviewed, and ready for user commit/push",
+  "createdAt": "2026-09-10",
+  "branch": "codex/review-supervisor"
+}
