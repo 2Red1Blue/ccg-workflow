@@ -1,0 +1,12 @@
+{
+  "id": "model-thinking-compatibility",
+  "title": "Provider-scoped model compatibility settings and request adaptation",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "general",
+  "currentPhase": "completed",
+  "nextAction": "Source implementation verified and committed; archive records",
+  "createdAt": "2026-09-10",
+  "branch": "pending"
+}
