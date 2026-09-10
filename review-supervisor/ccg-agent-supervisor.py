@@ -41,7 +41,8 @@ DEFAULT_WRAPPER = Path(os.environ.get("CCG_WRAPPER_PATH", str(DEFAULT_CLAUDE_HOM
 DEFAULT_REAL_WRAPPER = DEFAULT_WRAPPER.with_name("codeagent-wrapper.real")
 DEFAULT_CODEX = Path(os.environ.get("CCG_CODEX_CLI", shutil.which("codex") or "codex")).expanduser()
 DEFAULT_CODEX_REVIEW_MODEL = "gpt-5.6-luna"
-DEFAULT_CLAUDE_REVIEW_EFFORT = "medium"
+DEFAULT_CLAUDE_REVIEW_EFFORT = "low"
+DEFAULT_CLAUDE_ANALYSIS_EFFORT = "medium"
 REQUEST_LIMIT = 512 * 1024
 PATCH_LIMIT = 5 * 1024 * 1024
 REPORT_LIMIT = 2 * 1024 * 1024
@@ -1595,7 +1596,10 @@ def parse_args() -> argparse.Namespace:
     analyze.add_argument("--workdir", required=True)
     analyze.add_argument("--context-file", action="append", required=True, help="explicit regular context file; repeat for multiple files")
     analyze.add_argument("--task-dir", help="existing task directory owned by workdir; association is read-only")
-    for leaf in (review, analyze):
+    for leaf, effort_env, effort_default in (
+        (review, "CCG_CLAUDE_REVIEW_EFFORT", DEFAULT_CLAUDE_REVIEW_EFFORT),
+        (analyze, "CCG_CLAUDE_ANALYSIS_EFFORT", DEFAULT_CLAUDE_ANALYSIS_EFFORT),
+    ):
         leaf.add_argument("--retry-run", help="reuse successful reports only when mode, task, request, input and leaf policy match")
         leaf.add_argument("--claude-transport", choices=("auto", "stream", "wrapper"), default="auto", help="auto uses direct event streaming; custom test wrappers keep legacy mode")
         leaf.add_argument("--claude-cli", default="claude")
@@ -1613,8 +1617,8 @@ def parse_args() -> argparse.Namespace:
         leaf.add_argument(
             "--claude-effort",
             choices=("low", "medium", "high", "xhigh", "max"),
-            default=os.environ.get("CCG_CLAUDE_REVIEW_EFFORT", DEFAULT_CLAUDE_REVIEW_EFFORT),
-            help=f"Claude effort for the leaf (default: {DEFAULT_CLAUDE_REVIEW_EFFORT})",
+            default=os.environ.get(effort_env, effort_default),
+            help=f"Claude effort for the leaf (default: {effort_default}; env: {effort_env})",
         )
         leaf.add_argument("--wrapper", default=str(DEFAULT_WRAPPER))
         leaf.add_argument("--timeout-seconds", type=int, default=900)

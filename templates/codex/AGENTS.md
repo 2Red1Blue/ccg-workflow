@@ -279,7 +279,7 @@ Critical 问题 → spawn 修复代理。Warning → 视情况修复。
 
 ```bash
 # 持久化并行运行独立 Codex 与 Claude review leaf
-printf '%s\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | "$HOME/.claude/bin/ccg-agent-supervisor" review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked
+printf '%s\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | "$HOME/.claude/bin/ccg-agent-supervisor" review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked --claude-effort "${CCG_CLAUDE_REVIEW_EFFORT:-low}"
 ```
 
 1. **两个 leaf 都要成功** — 超时、传输失败或模型不匹配都不是通过

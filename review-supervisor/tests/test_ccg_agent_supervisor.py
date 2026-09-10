@@ -346,8 +346,8 @@ class SupervisorReviewTest(unittest.TestCase):
         effort_file = self.sync / "claude-effort"
         completed = self._review(environment={"FAKE_CLAUDE_EFFORT_FILE": str(effort_file)})
         self.assertEqual(0, completed.returncode, completed.stderr.decode())
-        self.assertEqual("medium", effort_file.read_text(encoding="utf-8"))
-        self.assertEqual("medium", self._status()["preflight"]["claude_review_effort"])
+        self.assertEqual("low", effort_file.read_text(encoding="utf-8"))
+        self.assertEqual("low", self._status()["preflight"]["claude_review_effort"])
 
     def test_claude_review_effort_can_be_overridden(self) -> None:
         effort_file = self.sync / "claude-effort"
@@ -355,6 +355,7 @@ class SupervisorReviewTest(unittest.TestCase):
             environment={
                 "FAKE_CLAUDE_EFFORT_FILE": str(effort_file),
                 "CCG_CLAUDE_REVIEW_EFFORT": "medium",
+                "CCG_CLAUDE_ANALYSIS_EFFORT": "high",
             }
         )
         self.assertEqual(0, completed.returncode, completed.stderr.decode())

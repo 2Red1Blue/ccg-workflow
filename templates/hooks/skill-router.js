@@ -78,7 +78,7 @@ try {
 用户明确请求双模型审查。请在变更所在的 git 工作目录执行一次持久化审查：
 
 \`\`\`bash
-printf '%s\\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | '${supervisorPath}' review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked
+printf '%s\\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | '${supervisorPath}' review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked --claude-effort "\${CCG_CLAUDE_REVIEW_EFFORT:-low}"
 \`\`\`
 
 等待 Codex 与 Claude leaf 都完成；任何超时、传输失败或模型不匹配都不是审查通过。结果会写入 CCG Review Center。

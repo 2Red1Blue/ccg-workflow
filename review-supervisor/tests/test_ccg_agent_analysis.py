@@ -76,6 +76,34 @@ class SupervisorAnalysisTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr.decode())
         self.assertIsNone(self.latest()['task'])
 
+    def test_analysis_defaults_to_medium_effort(self):
+        result = self.analyze(task=False)
+        self.assertEqual(0, result.returncode, result.stderr.decode())
+        self.assertEqual('medium', self.latest()['preflight']['claude_review_effort'])
+
+    def test_analysis_effort_can_be_overridden_independently(self):
+        result = self.analyze(
+            task=False,
+            environment={'CCG_CLAUDE_ANALYSIS_EFFORT': 'low'},
+        )
+        self.assertEqual(0, result.returncode, result.stderr.decode())
+        self.assertEqual('low', self.latest()['preflight']['claude_review_effort'])
+
+    def test_analysis_cli_effort_overrides_environment(self):
+        effort_file = self.h.sync / 'analysis-claude-effort'
+        result = self.analyze(
+            task=False,
+            environment={
+                'CCG_CLAUDE_ANALYSIS_EFFORT': 'high',
+                'CCG_CLAUDE_REVIEW_EFFORT': 'medium',
+                'FAKE_CLAUDE_EFFORT_FILE': str(effort_file),
+            },
+            extra=['--claude-effort', 'low'],
+        )
+        self.assertEqual(0, result.returncode, result.stderr.decode())
+        self.assertEqual('low', self.latest()['preflight']['claude_review_effort'])
+        self.assertEqual('low', effort_file.read_text(encoding='utf-8'))
+
     def test_context_is_explicit_and_diff_contract_is_separate(self):
         for extra in ([], ['--diff-file', str(self.h.patch)]):
             result = self.analyze(context=False, extra=extra)

@@ -196,7 +196,7 @@ function main() {
     reasons,
     `审查范围：${decision.sourceFiles} 个源码/契约文件，约 ${decision.changedLines} 行。`,
     '先完成相关测试，再在当前工作目录执行一次持久化审查：',
-    `  printf '%s\\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | ${supervisor} review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked`,
+    `  printf '%s\\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | ${supervisor} review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked --claude-effort "\${CCG_CLAUDE_REVIEW_EFFORT:-low}"`,
     '等待两个 leaf 都返回；任一 transport/model 失败或超时都不是审查通过。结果会写入 CCG Review Center。',
     '在审查结果明确前，不要把任务标记为 completed。',
     '</ccg-review-gate>',

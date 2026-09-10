@@ -61,7 +61,7 @@ Gate: 双模型审查已返回 ✓
 在审查范围所在的 git 工作目录执行：
 
 ```bash
-printf '%s\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | "$HOME/.claude/bin/ccg-agent-supervisor" review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked
+printf '%s\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | "$HOME/.claude/bin/ccg-agent-supervisor" review --workdir "$(pwd)" --snapshot-base HEAD --include-untracked --claude-effort "${CCG_CLAUDE_REVIEW_EFFORT:-low}"
 ```
 
 该命令由持久化审查器并行运行独立 Codex/Claude leaf，并写入 CCG Review Center。等待两个 leaf 返回；任何超时、传输错误或模型不匹配均是**审查未完成**，不能作为通过。

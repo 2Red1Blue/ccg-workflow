@@ -119,6 +119,14 @@ python3 -m unittest discover -s review-supervisor/tests -p 'test_*.py'
 The installed command is documented by `~/.claude/docs/ccg-review-supervisor.md`.
 That local document and review receipts are intentionally not package inputs.
 
+Review leaves default to Claude effort `low`; pass `--claude-effort` for an
+explicit per-run override. Analysis leaves retain the independent `medium`
+default and use `CCG_CLAUDE_ANALYSIS_EFFORT` when a different default is needed.
+`CCG_CLAUDE_REVIEW_EFFORT` remains the review-only environment override;
+generated review commands pass `--claude-effort "${CCG_CLAUDE_REVIEW_EFFORT:-low}"`.
+For receipt compatibility, both modes continue to record the selected value in
+the existing `preflight.claude_review_effort` field.
+
 ## Durable analysis and canonical tasks
 
 `ccg-task` is the packaged task router. The package source is

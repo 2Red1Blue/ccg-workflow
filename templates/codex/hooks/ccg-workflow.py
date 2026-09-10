@@ -201,7 +201,7 @@ def build_guidance(task, progress, root, message):
             f"原因：{reason}",
             f"审查范围：{progress['source_files']} 个源码/契约文件，约 {progress['changed_lines']} 行。",
             "先完成相关测试，再在当前工作目录执行一次持久化审查：",
-            f"  printf '%s\\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | {supervisor} review --workdir \"$(pwd)\" --snapshot-base HEAD --include-untracked",
+            f"  printf '%s\\n' 'Review the current change for correctness, security, regression risk, and maintainability. Return Critical/Warning/Info findings with file:line evidence.' | {supervisor} review --workdir \"$(pwd)\" --snapshot-base HEAD --include-untracked --claude-effort \"${{CCG_CLAUDE_REVIEW_EFFORT:-low}}\"",
             "等待 Codex 与 Claude leaf 都返回；任一超时、传输失败或模型不匹配都不是审查通过。",
         ])
 
