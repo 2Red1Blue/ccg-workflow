@@ -15,6 +15,15 @@
     </section>
     <section class="intro"><div><p class="eyebrow">LOCAL OBSERVATORY / 01</p><h1>让每次审查，都有迹可循。</h1><p class="subtitle">两个视角，一份可追溯的记录。查看执行过程，回到具体结论。</p></div><button id="refresh" class="refresh">刷新记录 ↻</button></section>
     <div id="error" role="alert" hidden></div>
+    <section class="compatibility" aria-labelledby="compatibility-title">
+      <div class="compatibility-head"><div><p class="eyebrow">GATEWAY / MODEL COMPATIBILITY</p><h2 id="compatibility-title">模型兼容规则</h2><p>仅在 cc-switch 的精确 provider ID 与映射后的精确输出模型都匹配时，移除 <code>thinking: disabled</code>。</p></div><span id="compatibility-state" class="compatibility-state" role="status" aria-live="polite">正在读取规则…</span></div>
+      <form id="compatibility-form" novalidate>
+        <p class="compatibility-note">填写 cc-switch 中的 provider ID 和最终出站 model。显示名称可能不同；不会猜测别名或自动转换。示例模型可填 <code>glm-5.3-flash</code>，但实际出站 ID 可能是 <code>glm-5-3-flash</code>，请按已验证配置填写。</p>
+        <div id="compatibility-rules" aria-live="polite"></div>
+        <div class="compatibility-actions"><button type="button" id="add-compatibility-rule" disabled>添加规则</button><button type="submit" id="save-compatibility-rules" disabled>保存规则</button><button type="button" id="reload-compatibility-rules">重新载入</button></div>
+        <p id="compatibility-message" class="compatibility-message" role="alert" hidden></p>
+      </form>
+    </section>
     <section class="stats" aria-label="审查概况">
       <button type="button" data-filter="all"><span>保留记录</span><strong id="total">—</strong></button><button type="button" data-filter="running"><span>正在执行</span><strong id="running">—</strong></button><button type="button" data-filter="changes"><span>需要修改</span><strong id="changes">—</strong></button><button type="button" data-filter="incomplete"><span>结果未齐</span><strong id="incomplete">—</strong></button>
     </section>
@@ -26,6 +35,6 @@
       </aside>
       <section id="detail" class="detail" aria-label="审查详情"><div class="empty"><span class="empty-mark">[ … ]</span><h2>选择一条审查</h2><p>历史记录将在这里呈现，两路报告各自保留。</p></div></section>
     </div>
-    <footer>只读 · 仅本机访问 · 页面每 3 秒刷新，隐藏时暂停。展示 supervisor 当前保留的数据；已清理的记录不会恢复。<br>执行成功不等于审查通过。报告可能包含项目内容，请谨慎复制和分享。</footer>
+    <footer>仅本机访问 · 审查历史每 3 秒刷新，隐藏时暂停。兼容规则需在此页明确保存；已安装的旧 cc-switch 网关不会因保存规则而自动获得支持。<br>执行成功不等于审查通过。报告可能包含项目内容，请谨慎复制和分享。</footer>
   </main>
 </body></html>

@@ -1,4 +1,4 @@
-"""Read-only, loopback-only review history. No raw bundles or logs are served."""
+"""Loopback-only review history and compatibility settings without raw bundle access."""
 from __future__ import annotations
 
 import fcntl
@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import secrets
 import signal
 import stat
 import threading
@@ -13,6 +14,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from ccg_model_compat import CompatibilityConflict, CompatibilityError, CompatibilityStore, validate_config
 
 RUN_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -176,8 +179,10 @@ class ReviewServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, root, port=19876):
+    def __init__(self, root, port=19876, compatibility_path=None):
         self.history = History(root)
+        self.compatibility = CompatibilityStore(compatibility_path)
+        self.compatibility_csrf_token = secrets.token_urlsafe(32)
         self.slots = threading.BoundedSemaphore(8)
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
@@ -234,6 +239,10 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self.send(503, {"error": "Review Center asset unavailable"})
         try:
+            if path == "/api/model-compat":
+                data = self.server.compatibility.read()
+                data["csrf_token"] = self.server.compatibility_csrf_token
+                return self.send(200, data)
             if path == "/api/runs":
                 return self.send(200, self.server.history.query())
             match = re.fullmatch(r"/api/runs/([0-9a-f-]+)", path)
@@ -241,8 +250,61 @@ class Handler(BaseHTTPRequestHandler):
                 row = self.server.history.query(match[1])
                 return self.send(200, row) if row else self.send(404, {"error": "Review missing or expired"})
             return self.send(404, {"error": "Not found"})
+        except CompatibilityError:
+            return self.send(400, {
+                "error": "Compatibility configuration unavailable",
+                "path": str(self.server.compatibility.path),
+                "recovery": "Check the JSON syntax and mode 0600, then reload the rules.",
+            })
         except OSError:
             return self.send(503, {"error": "Review directory unavailable"})
+
+    def do_PUT(self):
+        if urlsplit(self.path).path != "/api/model-compat":
+            return self.send(404, {"error": "Not found"})
+        hosts = self.headers.get_all("Host") or []
+        origins = self.headers.get_all("Origin") or []
+        if len(hosts) != 1 or hosts[0] != self.server.origin.removeprefix("http://"):
+            return self.send(403, {"error": "Local origin required"})
+        if len(origins) != 1 or origins[0] != self.server.origin or self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none"):
+            return self.send(403, {"error": "Same-origin request required"})
+        if self.headers.get("X-CCG-Request") != "model-compat" or self.headers.get("X-CCG-CSRF") != self.server.compatibility_csrf_token:
+            return self.send(403, {"error": "Compatibility save token required"})
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            return self.send(415, {"error": "JSON content type required"})
+        if self.headers.get_all("Transfer-Encoding"):
+            return self.send(400, {"error": "Transfer-Encoding is not supported"})
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit() or len(lengths[0]) > 6:
+            return self.send(400, {"error": "One valid Content-Length is required"})
+        length = int(lengths[0])
+        if length > 64 * 1024:
+            return self.send(413, {"error": "Compatibility request exceeds 64 KiB"})
+        if_match = self.headers.get("If-Match")
+        if if_match is None:
+            return self.send(428, {"error": "If-Match revision required"})
+        try:
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                return self.send(400, {"error": "Incomplete compatibility request body"})
+            data = json.loads(raw)
+        except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+            return self.send(400, {"error": "Malformed JSON configuration"})
+        if not isinstance(data, dict):
+            return self.send(400, {"error": "Configuration must be a JSON object"})
+        try:
+            validate_config(data)
+        except CompatibilityError as error:
+            return self.send(400, {"error": str(error)})
+        try:
+            return self.send(200, self.server.compatibility.write(data, if_match))
+        except CompatibilityConflict:
+            return self.send(409, {"error": "Compatibility rules changed elsewhere; reload before saving"})
+        except CompatibilityError:
+            return self.send(400, {"error": "Invalid compatibility configuration"})
+        except OSError:
+            return self.send(503, {"error": "Compatibility configuration unavailable"})
 
 
 def serve(root: Path, port: int, write_receipt):

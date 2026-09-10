@@ -24,6 +24,7 @@ The installer deploys these files to `~/.claude/bin/` as:
 ```text
 ccg-agent-supervisor
 ccg_review_runtime.py
+ccg_model_compat.py
 ccg_review_web.py
 ccg_review_web.html
 ccg_review_web.js
@@ -37,7 +38,7 @@ automatic tabs; `true` explicitly selects the legacy system-browser opener.
 
 ## Review center
 
-Run `ccg-agent-supervisor web-ui` to serve the read-only review center at
+Run `ccg-agent-supervisor web-ui` to serve the review center at
 `127.0.0.1:19876` (`--port` overrides it). In another terminal,
 `ccg-agent-supervisor web-url` prints the fixed browser URL. Open
 `http://127.0.0.1:19876/` directly in any local browser or tab; no access token,
@@ -64,6 +65,31 @@ figures are also filter buttons. Click the poster for focus mode, click a report
 button to collapse or expand it, press `/` to focus search, `r` to refresh, and
 `Escape` to clear search. These controls change only the local view; they never
 start, retry, approve, cancel, or mutate a review.
+
+The settings panel manages exact outbound-model compatibility rules. A rule has
+an exact cc-switch `provider_id`, the final resolved outbound `model`, and an
+`omit_disabled_thinking` flag. It has no wildcard, display-name alias, or
+global default. The `glm-5-3-flash` example is deliberately explicit. Save
+uses a revision check: if another local settings editor saved first, reload the
+latest rules before editing again. The page reloads its saved state after a
+successful save; the running gateway reads the same file for each applicable
+outbound request.
+
+The shared configuration is
+`~/.claude/.ccg/model-compatibility/config.json` by default.
+`CCG_MODEL_COMPAT_CONFIG` may select an absolute alternate path for both the
+review center and gateway. The file is private, owner-only, bounded, validated,
+and atomically replaced. Invalid, unsafe, or conflicting data is reported to
+the caller; it is never silently treated as an active rule.
+If the review center cannot load it, it displays the safe path and asks you to
+check JSON syntax and mode `0600`, then reload the rules. Do not delete the
+file to recover; correct its contents or permissions instead.
+
+Installing this source updates the local review-center files only. It does not
+modify global cc-switch settings or a running gateway binary. Build and install
+the gateway version that reads this policy, then restart that gateway, before a
+saved rule can affect an existing Claude Code Stop evaluator or other upstream
+request path.
 
 Only fixed metadata fields and the two reports are exposed, never raw bundles,
 stderr/stdout logs, settings or arbitrary files. Reports are rendered as text,

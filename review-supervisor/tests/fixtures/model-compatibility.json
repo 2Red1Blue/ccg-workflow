@@ -1,0 +1,1 @@
+{"version":1,"rules":[{"provider_id":"glm","model":"glm-5-3-flash","omit_disabled_thinking":true},{"provider_id":"anthropic","model":"claude-sonnet-4-5","omit_disabled_thinking":false}]}
