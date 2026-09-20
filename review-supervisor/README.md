@@ -9,6 +9,13 @@ after a terminal result.
 records only final reports, partial answer text, progress metadata, and actual
 response model IDs; it deliberately excludes reasoning and tool payloads.
 
+`ccg_coding_domain.py` is the narrow, no-storage Coding Domain pilot for the
+Personal AI Ecosystem. CCG remains the target and review-independence authority;
+Personal Runtime admits only personal constraints and Delegation records, Fabric
+executes an exact target revision, and Workbench reduces owner receipts through
+observations. Its durable-read and live-inspect APIs are intentionally separate.
+See [ADR 0001](../docs/adr/0001-coding-domain-personal-ecosystem-pilot.md).
+
 Direct Claude review and analysis use `Read`, `Grep`, and `Glob` to inspect
 `REQUEST.md` and `CHANGES.patch` or `CONTEXT.md` inside the run bundle. Initial
 stdin contains only leaf instructions; request and source bodies stay in files.
@@ -24,6 +31,7 @@ The installer deploys these files to `~/.claude/bin/` as:
 ```text
 ccg-agent-supervisor
 ccg_review_runtime.py
+ccg_coding_domain.py
 ccg_model_compat.py
 ccg_review_web.py
 ccg_review_web.html
