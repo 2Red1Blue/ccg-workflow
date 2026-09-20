@@ -16,6 +16,7 @@ SPEC.loader.exec_module(DOMAIN)
 DIGEST = "sha256:" + "a" * 64
 POLICY_DIGEST = "sha256:" + "b" * 64
 ACTION_DIGEST = "sha256:" + "c" * 64
+CONTEXT_DIGEST = "sha256:" + "d" * 64
 
 
 def target():
@@ -74,19 +75,22 @@ class CodingDomainTest(unittest.TestCase):
                 execution_target_ref="fabric-target:qualified-v1",
             )
 
-    def test_admission_contains_target_identity_but_never_review_truth(self):
+    def test_ccg_submits_only_the_personal_runtime_admission_command(self):
         request = DOMAIN.TargetAdmissionRequest(
             "request-17",
             target(),
             DOMAIN.PersonalAdmissionContext("delegation-17", 3, "policy:4", "profile:8", "constraint:9", "recovery:2"),
         )
-        payload = request.as_target_reference()
-        self.assertEqual("ccg", payload["target"]["selectionAuthority"])
-        self.assertEqual("r7", payload["target"]["targetRevision"])
-        self.assertEqual(DIGEST, payload["target"]["targetDigest"])
-        self.assertNotIn("reviewerRef", payload["target"])
-        self.assertNotIn("verdict", payload["target"])
-        self.assertNotIn("review", payload["target"])
+        command = DOMAIN.to_delegation_commit(request, commit_material())
+        decision = command["payload"]["decision"]
+        self.assertEqual("personal-runtime.delegation-admission.v1", command["schemaVersion"])
+        self.assertEqual("ccg", decision["selectionAuthority"])
+        self.assertEqual("ccg:decision:target-17:r7", decision["domainDecisionRef"])
+        self.assertNotEqual(DIGEST, decision["targetDigest"])
+        self.assertFalse(hasattr(request, "as_target_reference"))
+        self.assertNotIn("reviewerRef", decision)
+        self.assertNotIn("verdict", decision)
+        self.assertNotIn("review", decision)
 
     def test_admission_maps_to_the_public_personal_runtime_command(self):
         request = DOMAIN.TargetAdmissionRequest(
@@ -100,8 +104,12 @@ class CodingDomainTest(unittest.TestCase):
         self.assertEqual("ccg:decision:target-17:r7", command["payload"]["decision"]["domainDecisionRef"])
         self.assertNotIn("reviewerPolicyId", command["payload"]["decision"])
         self.assertEqual(
-            "sha256:8446a6019090a9539cacccf908469777ca7ed7f41d5e351bf18123dd6196d2a1",
+            "sha256:2a4ecfa1b50053001ddd2cee77f928fe2ab263f577d71620cf05a572d9d72847",
             command["payloadDigest"],
+        )
+        self.assertEqual(
+            "sha256:b8e1730f83df3a35d88e59d6860b2498dd806171ebeb5d0a8ebaf23bdc02f7dd",
+            command["payload"]["decision"]["targetDigest"],
         )
 
     def test_ccg_rechecks_completed_reviewer_under_the_frozen_policy(self):
@@ -122,18 +130,73 @@ class CodingDomainTest(unittest.TestCase):
                 ),
             )
 
-    def test_admission_outcomes_keep_personal_decision_separate_from_ccg_review(self):
-        admitted = DOMAIN.AdmissionOutcome("ADMITTED", "delegation-17", "outbox-17")
-        self.assertEqual("ADMITTED", admitted.status)
-        self.assertEqual("OUTCOME_UNKNOWN", DOMAIN.AdmissionOutcome("OUTCOME_UNKNOWN").status)
-        with self.assertRaisesRegex(DOMAIN.ContractError, "must not claim"):
-            DOMAIN.AdmissionOutcome("UNAVAILABLE", "delegation-17")
+    def test_recorded_receipt_uses_the_exact_personal_runtime_contract(self):
+        request = DOMAIN.TargetAdmissionRequest(
+            "request-17", target(),
+            DOMAIN.PersonalAdmissionContext("delegation-17", 3, "policy:4", "profile:8", "constraint:9", "recovery:2"),
+        )
+        command = DOMAIN.to_delegation_commit(request, commit_material())
 
-    def test_fabric_execution_is_pinned_to_the_admitted_ccg_target(self):
-        request = DOMAIN.execution_request_for(target(), DOMAIN.AdmissionOutcome("ADMITTED", "delegation-17", "outbox-17"))
-        self.assertEqual(("coding:target-17", "r7", DIGEST), (request.target_id, request.target_revision, request.target_digest))
-        with self.assertRaisesRegex(DOMAIN.ContractError, "requires a recorded"):
-            DOMAIN.execution_request_for(target(), DOMAIN.AdmissionOutcome("OUTCOME_UNKNOWN"))
+        class Port:
+            def commit(self, submitted):
+                self.submitted = submitted
+                return {
+                    "schemaVersion": "personal-runtime.delegation-admission-receipt.v1",
+                    "callerId": "ccg:local-client",
+                    "commandId": "request-17",
+                    "payloadDigest": submitted["payloadDigest"],
+                    "contextDigest": CONTEXT_DIGEST,
+                    "status": "RECORDED",
+                    "delegationId": "delegation-17",
+                    "delegationRevision": 4,
+                    "delegationVersion": 5,
+                    "outboxCommandId": "delegation-admission:17",
+                    "recordedAt": "2026-09-20T10:00:01Z",
+                }
+
+        port = Port()
+        receipt = DOMAIN.admit_target(port, request, commit_material())
+        self.assertEqual(command, port.submitted)
+        self.assertEqual("RECORDED", receipt.status)
+        self.assertEqual("personal-runtime.delegation-admission-receipt.v1", receipt.schema_version)
+        self.assertEqual("delegation-admission:17", receipt.outbox_command_id)
+
+    def test_transport_outcomes_are_not_personal_runtime_receipts(self):
+        request = DOMAIN.TargetAdmissionRequest(
+            "request-17", target(),
+            DOMAIN.PersonalAdmissionContext("delegation-17", 3, "policy:4", "profile:8", "constraint:9", "recovery:2"),
+        )
+
+        class Port:
+            def commit(self, _submitted):
+                return DOMAIN.AdmissionTransportOutcome("OUTCOME_UNKNOWN")
+
+        result = DOMAIN.admit_target(Port(), request, commit_material())
+        self.assertIsInstance(result, DOMAIN.AdmissionTransportOutcome)
+        self.assertEqual("OUTCOME_UNKNOWN", result.status)
+        with self.assertRaisesRegex(DOMAIN.ContractError, "transport status"):
+            DOMAIN.AdmissionTransportOutcome("RECORDED")
+
+    def test_ccg_does_not_construct_a_fabric_execution_request(self):
+        self.assertFalse(hasattr(DOMAIN, "FabricExecutionRequest"))
+        self.assertFalse(hasattr(DOMAIN, "execution_request_for"))
+
+    def test_canonical_digest_rejects_numbers_without_exact_runtime_parity(self):
+        material = commit_material()
+        unsupported = DOMAIN.PersonalRuntimeCommitMaterial(
+            caller_identity=material.caller_identity,
+            issued_at=material.issued_at,
+            resolved_target=material.resolved_target,
+            execution_input={"input": {"temperature": 0.5}},
+            constraint_receipt_refs=material.constraint_receipt_refs,
+            resolution_reason=material.resolution_reason,
+        )
+        request = DOMAIN.TargetAdmissionRequest(
+            "request-17", target(),
+            DOMAIN.PersonalAdmissionContext("delegation-17", 3, "policy:4", "profile:8", "constraint:9", "recovery:2"),
+        )
+        with self.assertRaisesRegex(DOMAIN.ContractError, "Personal Runtime builder"):
+            DOMAIN.to_delegation_commit(request, unsupported)
 
     def test_owner_receipt_becomes_a_stable_workbench_observation_input(self):
         observation = DOMAIN.SourceObservation.from_owner_receipt(receipt())

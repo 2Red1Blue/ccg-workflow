@@ -2,8 +2,8 @@
 
 CCG owns Coding target and review decisions.  This module deliberately holds no
 database, retry state, or workflow state machine: it only validates and converts
-immutable CCG facts at the boundaries owned by Personal Runtime, Agent Fabric,
-and Workbench.
+immutable CCG facts at the Personal Runtime admission and Workbench observation
+boundaries.
 """
 
 from __future__ import annotations
@@ -15,9 +15,12 @@ from typing import Mapping, Protocol
 
 
 SCHEMA_VERSION = "ccg.coding-domain.v1"
-ADMISSION_SCHEMA_VERSION = "ccg.coding-admission.v1"
 OBSERVATION_SCHEMA_VERSION = "ccg.coding-observation.v1"
 PERSONAL_RUNTIME_ADMISSION_SCHEMA_VERSION = "personal-runtime.delegation-admission.v1"
+PERSONAL_RUNTIME_ADMISSION_RECEIPT_SCHEMA_VERSION = (
+    "personal-runtime.delegation-admission-receipt.v1"
+)
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 class ContractError(ValueError):
@@ -42,9 +45,57 @@ def _digest(value: str, label: str) -> str:
 
 
 def _canonical_json(value: object) -> str:
-    """Match Personal Runtime's public canonical JSON digest encoding."""
+    """Match Personal Runtime canonical JSON for CCG's supported JSON subset.
 
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    Personal Runtime currently publishes the digest algorithm but not a command
+    builder.  CCG therefore accepts only integers that round-trip through a
+    JavaScript ``number`` exactly and rejects floats instead of guessing at
+    ECMAScript number formatting.  The exact-pin cross-repository qualification
+    compares both command digests against Personal Runtime's implementation.
+    """
+
+    return _serialize_canonical(value, set())
+
+
+def _serialize_canonical(value: object, ancestors: set[int]) -> str:
+    if value is None or isinstance(value, bool):
+        return json.dumps(value, separators=(",", ":"))
+    if isinstance(value, str):
+        if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ContractError("canonical JSON does not support surrogate code points")
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, int):
+        if abs(value) > _MAX_SAFE_INTEGER:
+            raise ContractError("canonical JSON integer exceeds JavaScript safe range")
+        return str(value)
+    if isinstance(value, float):
+        raise ContractError("canonical JSON floats require the Personal Runtime builder")
+    if not isinstance(value, (dict, list, tuple)):
+        raise ContractError(f"canonical JSON does not support {type(value).__name__}")
+
+    identity = id(value)
+    if identity in ancestors:
+        raise ContractError("canonical JSON does not support cyclic data")
+    ancestors.add(identity)
+    try:
+        if isinstance(value, (list, tuple)):
+            return "[" + ",".join(_serialize_canonical(item, ancestors) for item in value) + "]"
+
+        if any(not isinstance(key, str) for key in value):
+            raise ContractError("canonical JSON object keys must be strings")
+        keys = sorted(value, key=lambda key: key.encode("utf-16-be"))
+        return "{" + ",".join(
+            _serialize_canonical(key, ancestors)
+            + ":"
+            + _serialize_canonical(value[key], ancestors)
+            for key in keys
+        ) + "}"
+    finally:
+        ancestors.remove(identity)
+
+
+def _digest_json(value: object) -> str:
+    return "sha256:" + sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -153,8 +204,13 @@ class PersonalAdmissionContext:
 
     def __post_init__(self) -> None:
         _nonblank(self.delegation_id, "delegation_id")
-        if not isinstance(self.expected_delegation_version, int) or self.expected_delegation_version < 0:
-            raise ContractError("expected_delegation_version must be a non-negative integer")
+        if (
+            not isinstance(self.expected_delegation_version, int)
+            or isinstance(self.expected_delegation_version, bool)
+            or self.expected_delegation_version < 0
+            or self.expected_delegation_version > _MAX_SAFE_INTEGER
+        ):
+            raise ContractError("expected_delegation_version must be a non-negative safe integer")
         for label, value in (
             ("policy_revision_ref", self.policy_revision_ref),
             ("profile_revision_ref", self.profile_revision_ref),
@@ -166,11 +222,7 @@ class PersonalAdmissionContext:
 
 @dataclass(frozen=True)
 class TargetAdmissionRequest:
-    """CCG's target reference plus PR-owned context references.
-
-    This is not a second PR command schema. ``to_delegation_commit`` below
-    emits the published Personal Runtime command envelope.
-    """
+    """Inputs for one submission to Personal Runtime's admission command."""
 
     request_id: str
     target: CodingTargetDecision
@@ -178,33 +230,6 @@ class TargetAdmissionRequest:
 
     def __post_init__(self) -> None:
         _nonblank(self.request_id, "admission request_id")
-
-    def as_target_reference(self) -> dict[str, object]:
-        return {
-            "schemaVersion": ADMISSION_SCHEMA_VERSION,
-            "requestId": self.request_id,
-            "target": {
-                "targetId": self.target.target_id,
-                "targetRevision": self.target.target_revision,
-                "targetDigest": self.target.target_digest,
-                "selectionAuthority": "ccg",
-                "domainDecisionRef": self.target.domain_decision_ref,
-                "executionTargetRef": self.target.execution_target_ref,
-                "implementerRef": self.target.implementer.subject,
-                "reviewerPolicyId": self.target.reviewer_policy.policy_id,
-                "reviewerPolicyRevision": self.target.reviewer_policy.revision,
-                "reviewerPolicyDigest": self.target.reviewer_policy.digest,
-                "independenceClass": self.target.reviewer_policy.independence_class,
-            },
-            "personalContext": {
-                "delegationId": self.personal.delegation_id,
-                "expectedDelegationVersion": self.personal.expected_delegation_version,
-                "policyRevisionRef": self.personal.policy_revision_ref,
-                "profileRevisionRef": self.personal.profile_revision_ref,
-                "constraintSetRef": self.personal.constraint_set_ref,
-                "recoveryPolicyRef": self.personal.recovery_policy_ref,
-            },
-        }
 
 
 @dataclass(frozen=True)
@@ -237,6 +262,7 @@ def to_delegation_commit(
 ) -> dict[str, object]:
     """Produce PR's published ``delegation.commit`` envelope without private calls."""
 
+    resolved_target = dict(material.resolved_target)
     payload = {
         "expectedDelegationVersion": request.personal.expected_delegation_version,
         "decision": {
@@ -245,8 +271,8 @@ def to_delegation_commit(
             "policyRevision": request.personal.policy_revision_ref,
             "profileRevisionRef": request.personal.profile_revision_ref,
             "constraintSetRef": request.personal.constraint_set_ref,
-            "resolvedTarget": dict(material.resolved_target),
-            "targetDigest": request.target.target_digest,
+            "resolvedTarget": resolved_target,
+            "targetDigest": _digest_json(resolved_target),
             "constraintReceiptRefs": list(material.constraint_receipt_refs),
             "resolutionReason": material.resolution_reason,
             "recoveryPolicyRef": request.personal.recovery_policy_ref,
@@ -258,7 +284,7 @@ def to_delegation_commit(
         "schemaVersion": PERSONAL_RUNTIME_ADMISSION_SCHEMA_VERSION,
         "commandId": request.request_id,
         "commandType": "delegation.commit",
-        "payloadDigest": "sha256:" + sha256(_canonical_json(payload).encode("utf-8")).hexdigest(),
+        "payloadDigest": _digest_json(payload),
         "payload": payload,
         "callerIdentity": material.caller_identity,
         "expectedAggregateVersion": request.personal.expected_delegation_version,
@@ -267,33 +293,113 @@ def to_delegation_commit(
 
 
 @dataclass(frozen=True)
-class AdmissionOutcome:
-    """PR admission result; only PR can choose this outcome."""
+class PersonalRuntimeAdmissionReceipt:
+    """The exact durable receipt returned by Personal Runtime admission."""
 
-    status: str
-    delegation_ref: str | None = None
-    outbox_command_id: str | None = None
+    caller_id: str
+    command_id: str
+    payload_digest: str
+    context_digest: str
+    delegation_id: str
+    delegation_revision: int
+    delegation_version: int
+    outbox_command_id: str
+    recorded_at: str
+    status: str = "RECORDED"
+    schema_version: str = PERSONAL_RUNTIME_ADMISSION_RECEIPT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        allowed = {
-            "ADMITTED",
-            "REJECTED_BY_PERSONAL_CONSTRAINT",
-            "INVALID_DELEGATION",
-            "UNAVAILABLE",
-            "OUTCOME_UNKNOWN",
-            "IDEMPOTENCY_CONFLICT",
-        }
-        if self.status not in allowed:
-            raise ContractError("admission status is unsupported")
-        if self.status == "ADMITTED":
-            _nonblank(self.delegation_ref or "", "admitted delegation_ref")
-            _nonblank(self.outbox_command_id or "", "admitted outbox_command_id")
-        elif self.delegation_ref is not None or self.outbox_command_id is not None:
-            raise ContractError("non-admitted outcome must not claim a delegation or outbox command")
+        if self.schema_version != PERSONAL_RUNTIME_ADMISSION_RECEIPT_SCHEMA_VERSION:
+            raise ContractError("admission receipt schema_version is unsupported")
+        if self.status != "RECORDED":
+            raise ContractError("admission receipt status must be RECORDED")
+        for label, value in (
+            ("receipt caller_id", self.caller_id),
+            ("receipt command_id", self.command_id),
+            ("receipt delegation_id", self.delegation_id),
+            ("receipt outbox_command_id", self.outbox_command_id),
+            ("receipt recorded_at", self.recorded_at),
+        ):
+            _nonblank(value, label)
+        _digest(self.payload_digest, "receipt payload_digest")
+        _digest(self.context_digest, "receipt context_digest")
+        for label, value in (
+            ("delegation_revision", self.delegation_revision),
+            ("delegation_version", self.delegation_version),
+        ):
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+                or value > _MAX_SAFE_INTEGER
+            ):
+                raise ContractError(f"receipt {label} must be a positive safe integer")
+
+
+@dataclass(frozen=True)
+class AdmissionTransportOutcome:
+    """Transport evidence when no durable PR receipt was obtained."""
+
+    status: str
+
+    def __post_init__(self) -> None:
+        if self.status not in {"UNAVAILABLE", "OUTCOME_UNKNOWN"}:
+            raise ContractError("admission transport status is unsupported")
+
+
+def _parse_admission_receipt(
+    value: Mapping[str, object],
+    command: Mapping[str, object],
+) -> PersonalRuntimeAdmissionReceipt:
+    expected_keys = {
+        "schemaVersion",
+        "callerId",
+        "commandId",
+        "payloadDigest",
+        "contextDigest",
+        "status",
+        "delegationId",
+        "delegationRevision",
+        "delegationVersion",
+        "outboxCommandId",
+        "recordedAt",
+    }
+    if set(value) != expected_keys:
+        raise ContractError("Personal Runtime admission receipt fields are invalid")
+    payload = command.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ContractError("submitted admission command payload is invalid")
+    decision = payload.get("decision")
+    if not isinstance(decision, Mapping):
+        raise ContractError("submitted admission decision is invalid")
+    receipt = PersonalRuntimeAdmissionReceipt(
+        schema_version=value.get("schemaVersion"),
+        caller_id=value.get("callerId"),
+        command_id=value.get("commandId"),
+        payload_digest=value.get("payloadDigest"),
+        context_digest=value.get("contextDigest"),
+        status=value.get("status"),
+        delegation_id=value.get("delegationId"),
+        delegation_revision=value.get("delegationRevision"),
+        delegation_version=value.get("delegationVersion"),
+        outbox_command_id=value.get("outboxCommandId"),
+        recorded_at=value.get("recordedAt"),
+    )
+    if (
+        receipt.caller_id != command.get("callerIdentity")
+        or receipt.command_id != command.get("commandId")
+        or receipt.payload_digest != command.get("payloadDigest")
+        or receipt.delegation_id != decision.get("delegationId")
+    ):
+        raise ContractError("Personal Runtime admission receipt does not match its command")
+    return receipt
 
 
 class PersonalRuntimeAdmissionPort(Protocol):
-    def commit(self, command: Mapping[str, object]) -> AdmissionOutcome:
+    def commit(
+        self,
+        command: Mapping[str, object],
+    ) -> Mapping[str, object] | AdmissionTransportOutcome:
         """Consume only PR's published ``delegation.commit`` envelope."""
 
 
@@ -301,54 +407,16 @@ def admit_target(
     port: PersonalRuntimeAdmissionPort,
     request: TargetAdmissionRequest,
     material: PersonalRuntimeCommitMaterial,
-) -> AdmissionOutcome:
-    """Call the external PR seam without interpreting an outcome as review truth."""
+) -> PersonalRuntimeAdmissionReceipt | AdmissionTransportOutcome:
+    """Submit to PR and keep durable receipts distinct from transport evidence."""
 
-    outcome = port.commit(to_delegation_commit(request, material))
-    if not isinstance(outcome, AdmissionOutcome):
-        raise ContractError("Personal Runtime admission port returned an invalid outcome")
-    return outcome
-
-
-@dataclass(frozen=True)
-class FabricExecutionRequest:
-    """An execution-only request pinned to exactly one CCG target revision."""
-
-    delegation_ref: str
-    outbox_command_id: str
-    target_id: str
-    target_revision: str
-    target_digest: str
-    execution_target_ref: str
-
-    def __post_init__(self) -> None:
-        for label, value in (
-            ("delegation_ref", self.delegation_ref),
-            ("outbox_command_id", self.outbox_command_id),
-            ("target_id", self.target_id),
-            ("target_revision", self.target_revision),
-            ("execution_target_ref", self.execution_target_ref),
-        ):
-            _nonblank(value, label)
-        _digest(self.target_digest, "fabric execution target_digest")
-
-
-def execution_request_for(
-    decision: CodingTargetDecision,
-    admission: AdmissionOutcome,
-) -> FabricExecutionRequest:
-    """Bind Fabric to the admitted CCG revision; never choose a replacement revision."""
-
-    if admission.status != "ADMITTED":
-        raise ContractError("Fabric execution requires a recorded Personal Runtime admission")
-    return FabricExecutionRequest(
-        delegation_ref=admission.delegation_ref or "",
-        outbox_command_id=admission.outbox_command_id or "",
-        target_id=decision.target_id,
-        target_revision=decision.target_revision,
-        target_digest=decision.target_digest,
-        execution_target_ref=decision.execution_target_ref,
-    )
+    command = to_delegation_commit(request, material)
+    result = port.commit(command)
+    if isinstance(result, AdmissionTransportOutcome):
+        return result
+    if not isinstance(result, Mapping):
+        raise ContractError("Personal Runtime admission port returned an invalid result")
+    return _parse_admission_receipt(result, command)
 
 
 @dataclass(frozen=True)
