@@ -10,6 +10,7 @@ boundaries.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -34,6 +35,10 @@ DEFAULT_ADMISSION_TIMEOUT_MS = 10_000
 DEFAULT_ADMISSION_MAX_RESPONSE_BYTES = 1_048_576
 _MAX_HTTP_HEADER_BYTES = 16_384
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
+_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_RFC3339_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})"
+)
 
 
 class ContractError(ValueError):
@@ -48,12 +53,37 @@ def _nonblank(value: str, label: str) -> str:
 
 def _digest(value: str, label: str) -> str:
     value = _nonblank(value, label)
-    if not value.startswith("sha256:") or len(value) != len("sha256:") + 64:
-        raise ContractError(f"{label} must be a sha256 digest")
+    if _SHA256_DIGEST.fullmatch(value) is None:
+        raise ContractError(f"{label} must be a lowercase sha256 digest")
+    return value
+
+
+def _timestamp(value: str, label: str) -> str:
+    value = _nonblank(value, label)
+    if _RFC3339_TIMESTAMP.fullmatch(value) is None:
+        raise ContractError(f"{label} must be an RFC 3339 timestamp with timezone")
+    month = int(value[5:7])
+    day = int(value[8:10])
+    hour = int(value[11:13])
+    minute = int(value[14:16])
+    second = int(value[17:19])
+    timezone_hour = 0 if value.endswith("Z") else int(value[-5:-3])
+    timezone_minute = 0 if value.endswith("Z") else int(value[-2:])
+    if (
+        month < 1
+        or month > 12
+        or day < 1
+        or hour > 23
+        or minute > 59
+        or second > 59
+        or timezone_hour > 23
+        or timezone_minute > 59
+    ):
+        raise ContractError(f"{label} must be a valid timestamp")
     try:
-        int(value[len("sha256:"):], 16)
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
-        raise ContractError(f"{label} must be a sha256 digest") from error
+        raise ContractError(f"{label} must be a valid timestamp") from error
     return value
 
 
@@ -139,6 +169,44 @@ class ReviewerPolicy:
         _nonblank(self.independence_class, "reviewer independence_class")
 
 
+def coding_target_digest(
+    target_id: str,
+    target_revision: str,
+    implementer: WorkerRef,
+    reviewer: WorkerRef,
+    reviewer_policy: ReviewerPolicy,
+    execution_target_ref: str,
+) -> str:
+    """Digest every immutable CCG decision field, including reviewer identity."""
+
+    return _digest_json({
+        "targetId": _nonblank(target_id, "target_id"),
+        "targetRevision": _nonblank(target_revision, "target_revision"),
+        "implementer": {
+            "subject": implementer.subject,
+            "executionRef": implementer.execution_ref,
+        },
+        "reviewer": {
+            "subject": reviewer.subject,
+            "executionRef": reviewer.execution_ref,
+        },
+        "reviewerPolicy": {
+            "id": reviewer_policy.policy_id,
+            "revision": reviewer_policy.revision,
+            "digest": reviewer_policy.digest,
+            "independenceClass": reviewer_policy.independence_class,
+        },
+        "executionTargetRef": _nonblank(execution_target_ref, "execution_target_ref"),
+    })
+
+
+def coding_domain_decision_ref(target_digest: str) -> str:
+    """Derive the opaque cross-system reference from the verified CCG digest."""
+
+    digest = _digest(target_digest, "target_digest")
+    return "ccg:decision:" + digest.removeprefix("sha256:")
+
+
 @dataclass(frozen=True)
 class CodingTargetDecision:
     """An immutable CCG-owned decision; it intentionally contains no verdict."""
@@ -162,6 +230,18 @@ class CodingTargetDecision:
             raise ContractError("implementer and reviewer subjects must be independent")
         if self.implementer.execution_ref == self.reviewer.execution_ref:
             raise ContractError("implementer and reviewer executions must be independent")
+        expected_digest = coding_target_digest(
+            self.target_id,
+            self.target_revision,
+            self.implementer,
+            self.reviewer,
+            self.reviewer_policy,
+            self.execution_target_ref,
+        )
+        if self.target_digest != expected_digest:
+            raise ContractError("target_digest does not bind the immutable CCG decision")
+        if self.domain_decision_ref != coding_domain_decision_ref(expected_digest):
+            raise ContractError("domain_decision_ref does not bind target_digest")
 
     @property
     def authority(self) -> str:
@@ -338,6 +418,13 @@ class PersonalRuntimeAdmissionReceipt:
             _nonblank(value, label)
         _digest(self.payload_digest, "receipt payload_digest")
         _digest(self.context_digest, "receipt context_digest")
+        expected_outbox_id = personal_runtime_outbox_command_id(
+            self.caller_id,
+            self.command_id,
+        )
+        if self.outbox_command_id != expected_outbox_id:
+            raise ContractError("receipt outbox_command_id does not match its command identity")
+        _timestamp(self.recorded_at, "receipt recorded_at")
         for label, value in (
             ("delegation_revision", self.delegation_revision),
             ("delegation_version", self.delegation_version),
@@ -349,6 +436,16 @@ class PersonalRuntimeAdmissionReceipt:
                 or value > _MAX_SAFE_INTEGER
             ):
                 raise ContractError(f"receipt {label} must be a positive safe integer")
+
+
+def personal_runtime_outbox_command_id(caller_id: str, command_id: str) -> str:
+    """Derive the exact Personal Runtime outbox identity for one admission command."""
+
+    digest = _digest_json({
+        "callerId": _nonblank(caller_id, "receipt caller_id"),
+        "commandId": _nonblank(command_id, "receipt command_id"),
+    })
+    return "delegation-admission:" + digest.removeprefix("sha256:")
 
 
 @dataclass(frozen=True)

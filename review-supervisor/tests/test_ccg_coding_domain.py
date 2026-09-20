@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Contract tests for the CCG Coding Domain topology pilot."""
 
 import importlib.util
@@ -20,14 +19,27 @@ REQUEST_DIGEST = "sha256:" + "e" * 64
 
 
 def target():
+    implementer = DOMAIN.WorkerRef("ccg-implementer", "run:implement-1")
+    reviewer = DOMAIN.WorkerRef("ccg-reviewer", "run:review-1")
+    reviewer_policy = DOMAIN.ReviewerPolicy(
+        "dual-leaf", "v2", POLICY_DIGEST, "separate-subject-and-run"
+    )
+    target_digest = DOMAIN.coding_target_digest(
+        "coding:target-17",
+        "r7",
+        implementer,
+        reviewer,
+        reviewer_policy,
+        "fabric-target:codebuddy:qualified-v1",
+    )
     return DOMAIN.CodingTargetDecision(
         target_id="coding:target-17",
         target_revision="r7",
-        target_digest=DIGEST,
-        domain_decision_ref="ccg:decision:target-17:r7",
-        implementer=DOMAIN.WorkerRef("ccg-implementer", "run:implement-1"),
-        reviewer=DOMAIN.WorkerRef("ccg-reviewer", "run:review-1"),
-        reviewer_policy=DOMAIN.ReviewerPolicy("dual-leaf", "v2", POLICY_DIGEST, "separate-subject-and-run"),
+        target_digest=target_digest,
+        domain_decision_ref=DOMAIN.coding_domain_decision_ref(target_digest),
+        implementer=implementer,
+        reviewer=reviewer,
+        reviewer_policy=reviewer_policy,
         execution_target_ref="fabric-target:codebuddy:qualified-v1",
     )
 
@@ -86,7 +98,7 @@ class CodingDomainTest(unittest.TestCase):
         decision = command["payload"]["decision"]
         self.assertEqual("personal-runtime.delegation-admission.v1", command["schemaVersion"])
         self.assertEqual("ccg", decision["selectionAuthority"])
-        self.assertEqual("ccg:decision:target-17:r7", decision["domainDecisionRef"])
+        self.assertEqual(target().domain_decision_ref, decision["domainDecisionRef"])
         self.assertNotEqual(DIGEST, decision["targetDigest"])
         self.assertFalse(hasattr(request, "as_target_reference"))
         self.assertNotIn("reviewerRef", decision)
@@ -102,10 +114,13 @@ class CodingDomainTest(unittest.TestCase):
         self.assertEqual("personal-runtime.delegation-admission.v1", command["schemaVersion"])
         self.assertEqual("delegation.commit", command["commandType"])
         self.assertEqual("ccg", command["payload"]["decision"]["selectionAuthority"])
-        self.assertEqual("ccg:decision:target-17:r7", command["payload"]["decision"]["domainDecisionRef"])
+        self.assertEqual(
+            target().domain_decision_ref,
+            command["payload"]["decision"]["domainDecisionRef"],
+        )
         self.assertNotIn("reviewerPolicyId", command["payload"]["decision"])
         self.assertEqual(
-            "sha256:2a4ecfa1b50053001ddd2cee77f928fe2ab263f577d71620cf05a572d9d72847",
+            "sha256:0e1757ac0dc663d5f2fc40e2a4c3a956e35a7cd82c04b08797a2ef46ac2338fa",
             command["payloadDigest"],
         )
         self.assertEqual(
@@ -151,7 +166,9 @@ class CodingDomainTest(unittest.TestCase):
                     "delegationId": "delegation-17",
                     "delegationRevision": 4,
                     "delegationVersion": 5,
-                    "outboxCommandId": "delegation-admission:17",
+                    "outboxCommandId": DOMAIN.personal_runtime_outbox_command_id(
+                        "ccg:local-client", "request-17"
+                    ),
                     "recordedAt": "2026-09-20T10:00:01Z",
                 }
 
@@ -160,7 +177,64 @@ class CodingDomainTest(unittest.TestCase):
         self.assertEqual(command, port.submitted)
         self.assertEqual("RECORDED", receipt.status)
         self.assertEqual("personal-runtime.delegation-admission-receipt.v1", receipt.schema_version)
-        self.assertEqual("delegation-admission:17", receipt.outbox_command_id)
+        self.assertEqual(
+            DOMAIN.personal_runtime_outbox_command_id("ccg:local-client", "request-17"),
+            receipt.outbox_command_id,
+        )
+
+    def test_recorded_receipt_rejects_impossible_outbox_id_and_timestamp(self):
+        request = DOMAIN.TargetAdmissionRequest(
+            "request-17", target(),
+            DOMAIN.PersonalAdmissionContext(
+                "delegation-17", 3, "policy:4", "profile:8", "constraint:9", "recovery:2"
+            ),
+        )
+
+        class Port:
+            def __init__(self, outbox_command_id, recorded_at):
+                self.outbox_command_id = outbox_command_id
+                self.recorded_at = recorded_at
+
+            def commit(self, submitted):
+                return {
+                    "schemaVersion": "personal-runtime.delegation-admission-receipt.v1",
+                    "callerId": "ccg:local-client",
+                    "commandId": "request-17",
+                    "payloadDigest": submitted["payloadDigest"],
+                    "contextDigest": CONTEXT_DIGEST,
+                    "status": "RECORDED",
+                    "delegationId": "delegation-17",
+                    "delegationRevision": 4,
+                    "delegationVersion": 5,
+                    "outboxCommandId": self.outbox_command_id,
+                    "recordedAt": self.recorded_at,
+                }
+
+        with self.assertRaisesRegex(DOMAIN.ContractError, "outbox_command_id"):
+            DOMAIN.admit_target(
+                Port("delegation-admission:17", "2026-09-20T10:00:01Z"),
+                request,
+                commit_material(),
+            )
+        for recorded_at in (
+            "2026-02-30T10:00:01Z",
+            "2026-01-01T24:00:00Z",
+            "2026-01-01T00:00:00+01:60",
+        ):
+            with (
+                self.subTest(recorded_at=recorded_at),
+                self.assertRaisesRegex(DOMAIN.ContractError, "timestamp"),
+            ):
+                DOMAIN.admit_target(
+                    Port(
+                        DOMAIN.personal_runtime_outbox_command_id(
+                            "ccg:local-client", "request-17"
+                        ),
+                        recorded_at,
+                    ),
+                    request,
+                    commit_material(),
+                )
 
     def test_transport_outcomes_are_not_personal_runtime_receipts(self):
         request = DOMAIN.TargetAdmissionRequest(

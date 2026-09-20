@@ -28,18 +28,32 @@ def request_payload():
         "digest": POLICY_DIGEST,
         "independenceClass": "separate-subject-and-run",
     }
+    implementer = {
+        "subject": "ccg-implementer",
+        "executionRef": "run:implement-1",
+    }
+    target_digest = DOMAIN.coding_target_digest(
+        "coding:target-17",
+        "r7",
+        DOMAIN.WorkerRef(implementer["subject"], implementer["executionRef"]),
+        DOMAIN.WorkerRef(reviewer["subject"], reviewer["executionRef"]),
+        DOMAIN.ReviewerPolicy(
+            policy["id"],
+            policy["revision"],
+            policy["digest"],
+            policy["independenceClass"],
+        ),
+        "personal-runtime:resolved-target",
+    )
     return {
         "schemaVersion": "ccg.coding-admission-request.v1",
         "requestId": "request-17",
         "target": {
             "targetId": "coding:target-17",
             "targetRevision": "r7",
-            "targetDigest": DIGEST,
-            "domainDecisionRef": "ccg:decision:target-17:r7",
-            "implementer": {
-                "subject": "ccg-implementer",
-                "executionRef": "run:implement-1",
-            },
+            "targetDigest": target_digest,
+            "domainDecisionRef": DOMAIN.coding_domain_decision_ref(target_digest),
+            "implementer": implementer,
             "reviewer": reviewer,
             "reviewerPolicy": policy,
             "executionTargetRef": "personal-runtime:resolved-target",
@@ -47,7 +61,7 @@ def request_payload():
         "reviewAttestation": {
             "targetId": "coding:target-17",
             "targetRevision": "r7",
-            "targetDigest": DIGEST,
+            "targetDigest": target_digest,
             "reviewer": reviewer,
             "reviewerPolicy": policy,
         },
@@ -95,7 +109,9 @@ class FlowTest(unittest.TestCase):
                     "delegationId": "delegation-17",
                     "delegationRevision": 1,
                     "delegationVersion": 2,
-                    "outboxCommandId": "delegation-admission:17",
+                    "outboxCommandId": DOMAIN.personal_runtime_outbox_command_id(
+                        "ccg-caller", "request-17"
+                    ),
                     "recordedAt": "2026-09-21T00:00:01.000Z",
                 }
 
@@ -141,6 +157,50 @@ class FlowTest(unittest.TestCase):
                 raise AssertionError("admission must not be called")
 
         with self.assertRaisesRegex(DOMAIN.ContractError, "reviewer frozen"):
+            DOMAIN.execute_coding_admission(Port(), value)
+
+    def test_reviewer_and_attestation_cannot_replace_the_frozen_decision(self):
+        value = request_payload()
+        replacement = {"subject": "replacement", "executionRef": "run:replacement"}
+        value["target"]["reviewer"] = replacement
+        value["reviewAttestation"]["reviewer"] = replacement
+
+        class Port:
+            def commit(self, _command):
+                raise AssertionError("admission must not be called")
+
+        with self.assertRaisesRegex(DOMAIN.ContractError, "immutable CCG decision"):
+            DOMAIN.execute_coding_admission(Port(), value)
+
+    def test_recomputed_digest_requires_a_new_domain_decision_ref(self):
+        value = request_payload()
+        replacement = {"subject": "replacement", "executionRef": "run:replacement"}
+        value["target"]["reviewer"] = replacement
+        value["reviewAttestation"]["reviewer"] = replacement
+        policy = value["target"]["reviewerPolicy"]
+        value["target"]["targetDigest"] = DOMAIN.coding_target_digest(
+            value["target"]["targetId"],
+            value["target"]["targetRevision"],
+            DOMAIN.WorkerRef(
+                value["target"]["implementer"]["subject"],
+                value["target"]["implementer"]["executionRef"],
+            ),
+            DOMAIN.WorkerRef(replacement["subject"], replacement["executionRef"]),
+            DOMAIN.ReviewerPolicy(
+                policy["id"],
+                policy["revision"],
+                policy["digest"],
+                policy["independenceClass"],
+            ),
+            value["target"]["executionTargetRef"],
+        )
+        value["reviewAttestation"]["targetDigest"] = value["target"]["targetDigest"]
+
+        class Port:
+            def commit(self, _command):
+                raise AssertionError("admission must not be called")
+
+        with self.assertRaisesRegex(DOMAIN.ContractError, "domain_decision_ref"):
             DOMAIN.execute_coding_admission(Port(), value)
 
     def test_deep_link_is_optional_and_transport_evidence_emits_no_observation(self):

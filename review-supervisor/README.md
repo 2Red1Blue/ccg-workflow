@@ -30,9 +30,14 @@ CCG_PR_ADMISSION_TOKEN='provisioned-local-token' \
 The input freezes `CodingTargetDecision`, the exact reviewer attestation,
 Personal Runtime context and immutable execution input under
 `ccg.coding-admission-request.v1`. The command rejects implementer/reviewer
-identity reuse and reviewer substitution before opening the socket. A recorded
-PR receipt becomes one `ccg.coding-observation.v1` value for Workbench. Missing
-endpoints before the first request byte are `UNAVAILABLE`; a lost acknowledgement
+identity reuse and reviewer substitution before opening the socket. The verified
+target digest covers the immutable worker, reviewer-policy, and execution-target
+fields, and the decision reference derives from that digest. A recorded PR
+receipt must carry PR's deterministic outbox identity and a valid timestamp
+before it becomes one `ccg.coding-observation.v1` value for Workbench. CCG's
+owning workflow, not this no-storage consumer, allocates monotonic target
+revisions; changed content always produces a new digest and decision reference.
+Missing endpoints before the first request byte are `UNAVAILABLE`; a lost acknowledgement
 after a write is `OUTCOME_UNKNOWN` and is never retried automatically. The token
 is read only from the named environment variable and is never printed.
 

@@ -12,7 +12,17 @@ and final reviewer must have different stable subjects and execution references.
 CCG evaluates the predicate both when it freezes the target and when it accepts
 the final reviewer attestation against that same policy revision. An attestation
 must name the exact reviewer frozen in the decision; selecting a replacement
-requires a new decision revision rather than silently weakening the old one.
+requires a new immutable decision identity rather than silently weakening the
+old one. The CCG owner workflow allocates and persists monotonic target
+revisions; this stateless boundary validates their contents but does not create
+a second revision ledger.
+The CCG `targetDigest` covers target ID/revision, implementer, reviewer, reviewer
+policy, and execution target. `domainDecisionRef` is derived from that verified
+digest. Replacing either worker, the policy, or the execution target therefore
+requires a new digest and reference; changing both the decision and attestation
+cannot preserve the old immutable identity. Reusing a revision label with a new
+digest/reference is detectable as a different identity but remains an owner
+workflow allocation error, not something this no-storage seam can adjudicate.
 The other systems may retain `domainDecisionRef` but must not rerun the policy
 or store a CCG review verdict.
 
@@ -25,6 +35,9 @@ identities. `UNAVAILABLE` and `OUTCOME_UNKNOWN` describe transport evidence when
 no durable receipt was obtained; they are separate from the PR receipt and are
 not CCG rejection or review results. The command excludes reports, verdicts,
 task state, claims, evidence, and repair state.
+CCG validates the recorded timestamp and recomputes the exact PR outbox command
+ID from `(callerId, commandId)` before accepting a receipt; a merely non-empty
+or syntactically plausible value is not durable admission evidence.
 
 The CCG boundary submits only Personal Runtime's public `delegation.commit`
 command. Its decision uses `selectionAuthority="ccg"` and the immutable

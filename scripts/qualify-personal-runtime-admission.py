@@ -44,9 +44,9 @@ def _load_domain():
     return module
 
 
-def _request() -> dict[str, object]:
-    target_digest = "sha256:" + "a" * 64
+def _request(domain) -> dict[str, object]:
     policy_digest = "sha256:" + "b" * 64
+    implementer = {"subject": "ccg-implementer", "executionRef": "run:implement-exact-pin"}
     reviewer = {"subject": "ccg-reviewer", "executionRef": "run:review-exact-pin"}
     policy = {
         "id": "dual-leaf",
@@ -54,6 +54,19 @@ def _request() -> dict[str, object]:
         "digest": policy_digest,
         "independenceClass": "separate-subject-and-run",
     }
+    target_digest = domain.coding_target_digest(
+        "coding:exact-pin-probe",
+        "r1",
+        domain.WorkerRef(implementer["subject"], implementer["executionRef"]),
+        domain.WorkerRef(reviewer["subject"], reviewer["executionRef"]),
+        domain.ReviewerPolicy(
+            policy["id"],
+            policy["revision"],
+            policy["digest"],
+            policy["independenceClass"],
+        ),
+        "personal-runtime:resolved-target",
+    )
     return {
         "schemaVersion": "ccg.coding-admission-request.v1",
         "requestId": "ccg-exact-pin-admission",
@@ -61,11 +74,8 @@ def _request() -> dict[str, object]:
             "targetId": "coding:exact-pin-probe",
             "targetRevision": "r1",
             "targetDigest": target_digest,
-            "domainDecisionRef": "ccg:decision:exact-pin-probe:r1",
-            "implementer": {
-                "subject": "ccg-implementer",
-                "executionRef": "run:implement-exact-pin",
-            },
+            "domainDecisionRef": domain.coding_domain_decision_ref(target_digest),
+            "implementer": implementer,
             "reviewer": reviewer,
             "reviewerPolicy": policy,
             "executionTargetRef": "personal-runtime:resolved-target",
@@ -154,7 +164,7 @@ def main() -> int:
         raise RuntimeError("Personal Runtime exact-pin build failed:\n" + build.stdout + build.stderr)
 
     domain = _load_domain()
-    request = _request()
+    request = _request(domain)
     with tempfile.TemporaryDirectory(prefix="ccg-pr-public-admission-") as directory_name:
         directory = Path(directory_name)
         directory.chmod(0o700)

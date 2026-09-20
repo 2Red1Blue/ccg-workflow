@@ -55,7 +55,7 @@ description: '按规范执行 + 多模型协作 + 归档'
    EOF
    ```
 
-   **会话复用**：保存返回的 `SESSION_ID:`（{{BACKEND_PRIMARY}} → `CODEX_PROTO_SESSION`，{{FRONTEND_PRIMARY}} → `GEMINI_PROTO_SESSION`），Step 7 审查时复用。
+   **原型会话范围**：保存返回的 `SESSION_ID:` 仅用于同一原型叶子的实现迭代。Step 7 的最终审查必须启动独立 reviewer leaf；禁止把实施/原型 `SESSION_ID` 作为最终 reviewer identity 或 resume 目标。
 
 5. **Rewrite Prototype to Production Code**
    Upon receiving diff patch, **NEVER apply directly**. Rewrite by:
