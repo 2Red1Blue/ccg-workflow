@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 
-PERSONAL_RUNTIME_COMMIT = "b92494181d63fe39f07afa8e168a951c33f73888"
+PERSONAL_RUNTIME_COMMIT = "1ad2df9deeb3f9cd89fc5d0adab92c90bf592cde"
 ROOT = Path(__file__).resolve().parents[1]
 DOMAIN_PATH = ROOT / "review-supervisor" / "ccg_coding_domain.py"
 PROBE_PATH = (

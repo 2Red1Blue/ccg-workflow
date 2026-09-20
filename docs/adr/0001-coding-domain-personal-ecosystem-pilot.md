@@ -71,7 +71,7 @@ alter the target, receipt, observation, action, or projection.
   builder supports the exact integer JSON subset and rejects floats instead of
   guessing at ECMAScript number serialization. Its parity and service path are
   gated against clean exact pin
-  `b92494181d63fe39f07afa8e168a951c33f73888`; the builder should move to a
+  `1ad2df9deeb3f9cd89fc5d0adab92c90bf592cde`; the builder should move to a
   published Personal Runtime client seam when that seam exists.
 - The review-supervisor installer deploys this module as a private support file
   alongside the supervisor so the installed package contains the same contract.
