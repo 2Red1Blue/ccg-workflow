@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
-from typing import Mapping, Protocol, Sequence
+from typing import Mapping, Protocol
 
 
 SCHEMA_VERSION = "ccg.coding-domain.v1"
@@ -39,10 +39,6 @@ def _digest(value: str, label: str) -> str:
     except ValueError as error:
         raise ContractError(f"{label} must be a sha256 digest") from error
     return value
-
-
-def _canonical_digest(parts: Sequence[str]) -> str:
-    return "sha256:" + sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
 def _canonical_json(value: object) -> str:
@@ -414,21 +410,30 @@ class OwnerReceipt:
 
     @property
     def digest(self) -> str:
-        return _canonical_digest((
-            self.owner_ref, self.receipt_id, self.request_id, self.target_id,
-            self.target_revision, self.target_digest, str(self.owner_sequence),
-            self.outcome, self.occurred_at, self.deep_link or "",
-            *(
-                ":".join((
-                    action.action_type,
-                    action.owner_ref,
-                    action.expected_owner_revision,
-                    action.fence_token,
-                    action.payload_digest,
-                ))
+        payload = {
+            "schemaVersion": self.schema_version,
+            "ownerRef": self.owner_ref,
+            "receiptId": self.receipt_id,
+            "requestId": self.request_id,
+            "targetId": self.target_id,
+            "targetRevision": self.target_revision,
+            "targetDigest": self.target_digest,
+            "ownerSequence": self.owner_sequence,
+            "outcome": self.outcome,
+            "occurredAt": self.occurred_at,
+            "actions": [
+                {
+                    "actionType": action.action_type,
+                    "ownerRef": action.owner_ref,
+                    "expectedOwnerRevision": action.expected_owner_revision,
+                    "fenceToken": action.fence_token,
+                    "payloadDigest": action.payload_digest,
+                }
                 for action in self.actions
-            ),
-        ))
+            ],
+            **({"deepLink": self.deep_link} if self.deep_link is not None else {}),
+        }
+        return "sha256:" + sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)

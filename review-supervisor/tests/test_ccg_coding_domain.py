@@ -159,6 +159,26 @@ class CodingDomainTest(unittest.TestCase):
             DOMAIN.SourceObservation.from_owner_receipt(changed).source_digest,
         )
 
+    def test_owner_action_digest_has_no_cross_field_delimiter_collision(self):
+        original = receipt()
+        left = DOMAIN.OwnerReceipt(
+            owner_ref=original.owner_ref, receipt_id=original.receipt_id, request_id=original.request_id,
+            target_id=original.target_id, target_revision=original.target_revision,
+            target_digest=original.target_digest, owner_sequence=original.owner_sequence,
+            outcome=original.outcome, occurred_at=original.occurred_at,
+            actions=(DOMAIN.OwnerActionDescriptor("owner.cancel", original.owner_ref, "7:x", "fence", ACTION_DIGEST),),
+            deep_link=original.deep_link,
+        )
+        right = DOMAIN.OwnerReceipt(
+            owner_ref=original.owner_ref, receipt_id=original.receipt_id, request_id=original.request_id,
+            target_id=original.target_id, target_revision=original.target_revision,
+            target_digest=original.target_digest, owner_sequence=original.owner_sequence,
+            outcome=original.outcome, occurred_at=original.occurred_at,
+            actions=(DOMAIN.OwnerActionDescriptor("owner.cancel", original.owner_ref, "7", "x:fence", ACTION_DIGEST),),
+            deep_link=original.deep_link,
+        )
+        self.assertNotEqual(left.digest, right.digest)
+
     def test_ccg_does_not_implement_workbench_projection_or_live_inspection(self):
         self.assertFalse(hasattr(DOMAIN, "WorkbenchProjection"))
         self.assertFalse(hasattr(DOMAIN, "project_observations"))
