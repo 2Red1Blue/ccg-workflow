@@ -321,6 +321,7 @@ class OwnerReceipt:
     occurred_at: str
     actions: tuple[OwnerActionDescriptor, ...] = ()
     deep_link: str | None = None
+    schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -338,6 +339,8 @@ class OwnerReceipt:
             raise ContractError("owner_sequence must be a non-negative integer")
         if self.deep_link is not None:
             _nonblank(self.deep_link, "deep_link")
+        if self.schema_version != SCHEMA_VERSION:
+            raise ContractError("owner receipt schema_version is unsupported")
 
     @property
     def digest(self) -> str:
@@ -345,7 +348,16 @@ class OwnerReceipt:
             self.owner_ref, self.receipt_id, self.request_id, self.target_id,
             self.target_revision, self.target_digest, str(self.owner_sequence),
             self.outcome, self.occurred_at, self.deep_link or "",
-            *(f"{action.action_type}:{action.payload_digest}" for action in self.actions),
+            *(
+                ":".join((
+                    action.action_type,
+                    action.owner_ref,
+                    action.expected_owner_revision,
+                    action.fence_token,
+                    action.payload_digest,
+                ))
+                for action in self.actions
+            ),
         ))
 
 

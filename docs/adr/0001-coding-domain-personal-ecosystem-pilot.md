@@ -42,7 +42,9 @@ owner receipt -> SourceObservation -> rebuildable Workbench projection
 An owner receipt includes owner and receipt identities, request ID, target
 identity, owner sequence, outcome, request digest, occurrence time, and any
 owner-advertised action descriptors. A receipt replay is idempotent; a changed
-digest for the same receipt or owner sequence is a conflict. The reducer keeps
+digest for the same receipt or owner sequence is a conflict. The digest covers
+the complete action descriptor, including its owner revision and fence token.
+The reducer keeps
 the newest owner sequence and never invents action state transitions.
 
 `read_durable_projection` and `inspect_live_detail` are separate APIs. Live

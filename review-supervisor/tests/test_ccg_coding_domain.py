@@ -120,6 +120,23 @@ class CodingDomainTest(unittest.TestCase):
         with self.assertRaisesRegex(DOMAIN.ContractError, "owner sequence has a conflicting digest"):
             DOMAIN.project_observations([first, conflict])
 
+    def test_owner_action_fence_is_part_of_the_observation_identity(self):
+        original = receipt()
+        changed = DOMAIN.OwnerReceipt(
+            owner_ref=original.owner_ref, receipt_id="receipt-2", request_id=original.request_id,
+            target_id=original.target_id, target_revision=original.target_revision,
+            target_digest=original.target_digest, owner_sequence=original.owner_sequence,
+            outcome=original.outcome, occurred_at=original.occurred_at,
+            actions=(DOMAIN.OwnerActionDescriptor("owner.cancel", original.owner_ref, "7", "attempt:8", ACTION_DIGEST),),
+            deep_link=original.deep_link,
+        )
+        self.assertNotEqual(original.digest, changed.digest)
+        with self.assertRaisesRegex(DOMAIN.ContractError, "owner sequence has a conflicting digest"):
+            DOMAIN.project_observations([
+                DOMAIN.SourceObservation.from_owner_receipt(original),
+                DOMAIN.SourceObservation.from_owner_receipt(changed),
+            ])
+
     def test_durable_read_and_live_inspection_are_separate_and_link_failure_is_only_unavailable(self):
         projection = DOMAIN.project_observations([DOMAIN.SourceObservation.from_owner_receipt(receipt())])[0]
 
