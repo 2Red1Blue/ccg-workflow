@@ -17,6 +17,25 @@ receipts through observations. Workbench owns its separate durable-read and
 live-inspect APIs; this module only emits their source DTO and deep-link metadata.
 See [ADR 0001](../docs/adr/0001-coding-domain-personal-ecosystem-pilot.md).
 
+The module is also the supported product consumer:
+
+```sh
+CCG_PR_ADMISSION_TOKEN='provisioned-local-token' \
+  ccg-coding-domain admit \
+  --socket "$PERSONAL_RUNTIME_ADMISSION_SOCKET" \
+  --token-env CCG_PR_ADMISSION_TOKEN \
+  --input coding-admission.json
+```
+
+The input freezes `CodingTargetDecision`, the exact reviewer attestation,
+Personal Runtime context and immutable execution input under
+`ccg.coding-admission-request.v1`. The command rejects implementer/reviewer
+identity reuse and reviewer substitution before opening the socket. A recorded
+PR receipt becomes one `ccg.coding-observation.v1` value for Workbench. Missing
+endpoints before the first request byte are `UNAVAILABLE`; a lost acknowledgement
+after a write is `OUTCOME_UNKNOWN` and is never retried automatically. The token
+is read only from the named environment variable and is never printed.
+
 Direct Claude review and analysis use `Read`, `Grep`, and `Glob` to inspect
 `REQUEST.md` and `CHANGES.patch` or `CONTEXT.md` inside the run bundle. Initial
 stdin contains only leaf instructions; request and source bodies stay in files.
@@ -32,6 +51,7 @@ The installer deploys these files to `~/.claude/bin/` as:
 ```text
 ccg-agent-supervisor
 ccg_review_runtime.py
+ccg-coding-domain
 ccg_coding_domain.py
 ccg_model_compat.py
 ccg_review_web.py

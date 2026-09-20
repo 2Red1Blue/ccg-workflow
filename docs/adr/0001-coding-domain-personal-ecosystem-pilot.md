@@ -10,9 +10,11 @@ implementer/reviewer independence. A decision has an immutable CCG identity
 CCG-owned reviewer-policy identity `(id, revision, digest)`. The implementer
 and final reviewer must have different stable subjects and execution references.
 CCG evaluates the predicate both when it freezes the target and when it accepts
-the final reviewer attestation against that same policy revision. The other
-systems may retain `domainDecisionRef` but must not rerun the policy or store a
-CCG review verdict.
+the final reviewer attestation against that same policy revision. An attestation
+must name the exact reviewer frozen in the decision; selecting a replacement
+requires a new decision revision rather than silently weakening the old one.
+The other systems may retain `domainDecisionRef` but must not rerun the policy
+or store a CCG review verdict.
 
 Personal Runtime receives the published `delegation.commit` admission command.
 It owns personal constraint admission, the Delegation record, its durable
@@ -50,7 +52,10 @@ owner receipt -> SourceObservation -> rebuildable Workbench projection
 An owner receipt includes owner and receipt identities, request ID, target
 identity, owner sequence, outcome, request digest, occurrence time, and any
 owner-advertised action descriptors. The CCG source digest covers the complete
-action descriptor, including its owner revision and fence token. Workbench owns
+owner receipt, including the request digest and every action descriptor's owner
+revision and fence token. For admission, `requestDigest` is the canonical digest
+of the complete PR command envelope, while PR's `payloadDigest` continues to
+identify only its payload. Workbench owns
 receipt replay idempotency, ordering, conflict handling, the reducer, durable
 reads, and projection persistence; CCG neither implements nor selects them.
 
@@ -62,8 +67,11 @@ alter the target, receipt, observation, action, or projection.
 ## Consequences
 
 - There is no Bridge database, cross-system FSM, or CCG review-truth replica.
-- This module is a pure boundary adapter. It opens no network connection and
-  persists no state; Personal Runtime owns admission and Fabric dispatch.
+- The DTO and mapper functions persist no state. The supported
+  `ccg-coding-domain admit` consumer performs one authenticated request over
+  Personal Runtime's private Unix admission socket; it owns no retry loop,
+  database, scheduler, or command ledger. Personal Runtime owns admission and
+  Fabric dispatch.
 - The CCG mapper emits the published `delegation.commit` envelope and accepts
   only PR's exact recorded receipt or separate transport evidence. Personal
   Runtime still authenticates its CCG caller and validates its own context.
@@ -74,7 +82,8 @@ alter the target, receipt, observation, action, or projection.
   `1ad2df9deeb3f9cd89fc5d0adab92c90bf592cde`; the builder should move to a
   published Personal Runtime client seam when that seam exists.
 - The review-supervisor installer deploys this module as a private support file
-  alongside the supervisor so the installed package contains the same contract.
+  and as the executable `ccg-coding-domain` consumer. The npm package exposes
+  the same executable directly.
 
 ## Verification
 
@@ -83,8 +92,11 @@ review truth from admission, separate CCG and PR target digests, the exact PR
 receipt, transport-result separation, absence of a CCG Fabric request, and the
 owner-receipt to stable source-observation DTO (including action fence
 identity). `scripts/qualify-personal-runtime-admission.py` requires the clean
-exact PR pin, compares both CCG digests with PR canonical JSON, passes the
-command through PR's real parser and service commit, validates the recorded
-receipt, and asserts that exactly one Fabric outbox command exists. Workbench
+exact PR pin, starts PR's public single-writer owner process, rejects a bad
+credential, submits through CCG's packaged CLI and PR's authenticated socket,
+then validates target/execution input, Delegation revision and aggregate state,
+pending Fabric outbox state, payload/request/source digests, and the recorded
+receipt. Both Python contract tests and this qualification are CI and publish
+gates. Workbench
 owns the cross-repository observation-to-projection and durable/live-inspect
 tests.

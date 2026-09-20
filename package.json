@@ -30,7 +30,8 @@
     "workflow"
   ],
   "bin": {
-    "ccg": "bin/ccg.mjs"
+    "ccg": "bin/ccg.mjs",
+    "ccg-coding-domain": "review-supervisor/ccg_coding_domain.py"
   },
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",
@@ -88,6 +89,8 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "pnpm build",
     "test": "vitest run",
+    "test:coding-domain": "python3 -m unittest discover -s review-supervisor/tests -p 'test_ccg_coding_domain*.py'",
+    "qualify:personal-runtime": "python3 scripts/qualify-personal-runtime-admission.py",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "docs:dev": "vitepress dev docs",

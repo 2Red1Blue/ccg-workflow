@@ -60,3 +60,30 @@ jobs:
       - name: Go test
         working-directory: codeagent-wrapper
         run: go test -short ./...
+
+  coding-domain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: 2Red1Blue/personal-runtime
+          ref: 1ad2df9deeb3f9cd89fc5d0adab92c90bf592cde
+          path: .qualification/personal-runtime
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Personal Runtime exact pin
+        run: pnpm --dir .qualification/personal-runtime install --frozen-lockfile
+
+      - name: Test Coding Domain contracts
+        run: pnpm run test:coding-domain
+
+      - name: Qualify public Personal Runtime admission
+        run: pnpm run qualify:personal-runtime -- --personal-runtime .qualification/personal-runtime

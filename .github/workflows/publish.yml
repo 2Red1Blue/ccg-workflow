@@ -33,6 +33,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/checkout@v4
+        with:
+          repository: 2Red1Blue/personal-runtime
+          ref: 1ad2df9deeb3f9cd89fc5d0adab92c90bf592cde
+          path: .qualification/personal-runtime
+
       - uses: pnpm/action-setup@v4
 
       # Deliberately NO `registry-url` here. Setting it makes setup-node write an
@@ -42,10 +48,10 @@ jobs:
       # registry rejects the anonymous PUT with a misleading 404.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
-      # Node 22 ships npm 10.x, which has no OIDC support. Trusted publishing
+      # The runner image may ship an npm without OIDC support. Trusted publishing
       # needs >= 11.5.1, so upgrade before anything touches the registry.
       - name: Upgrade npm for OIDC support
         run: |
@@ -55,6 +61,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Personal Runtime exact pin
+        run: pnpm --dir .qualification/personal-runtime install --frozen-lockfile
+
       - name: Lint
         run: pnpm lint
 
@@ -63,6 +72,12 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Test Coding Domain contracts
+        run: pnpm run test:coding-domain
+
+      - name: Qualify public Personal Runtime admission
+        run: pnpm run qualify:personal-runtime -- --personal-runtime .qualification/personal-runtime
 
       - name: Build
         run: pnpm build

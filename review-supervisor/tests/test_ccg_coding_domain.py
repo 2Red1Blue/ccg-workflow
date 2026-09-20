@@ -6,7 +6,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[1] / "ccg_coding_domain.py"
 SPEC = importlib.util.spec_from_file_location("ccg_coding_domain", SCRIPT)
 DOMAIN = importlib.util.module_from_spec(SPEC)
@@ -17,6 +16,7 @@ DIGEST = "sha256:" + "a" * 64
 POLICY_DIGEST = "sha256:" + "b" * 64
 ACTION_DIGEST = "sha256:" + "c" * 64
 CONTEXT_DIGEST = "sha256:" + "d" * 64
+REQUEST_DIGEST = "sha256:" + "e" * 64
 
 
 def target():
@@ -37,6 +37,7 @@ def receipt(sequence=1, receipt_id="receipt-1", outcome="accepted", deep_link="c
         owner_ref="agent-fabric:operation-17",
         receipt_id=receipt_id,
         request_id="request-17",
+        request_digest=REQUEST_DIGEST,
         target_id="coding:target-17",
         target_revision="r7",
         target_digest=DIGEST,
@@ -118,15 +119,15 @@ class CodingDomainTest(unittest.TestCase):
             decision,
             DOMAIN.ReviewIndependenceAttestation(
                 decision.target_id, decision.target_revision, decision.target_digest,
-                DOMAIN.WorkerRef("ccg-reviewer", "run:review-final"), decision.reviewer_policy,
+                decision.reviewer, decision.reviewer_policy,
             ),
         )
-        with self.assertRaisesRegex(DOMAIN.ContractError, "actual reviewer subject"):
+        with self.assertRaisesRegex(DOMAIN.ContractError, "reviewer frozen"):
             DOMAIN.validate_review_independence(
                 decision,
                 DOMAIN.ReviewIndependenceAttestation(
                     decision.target_id, decision.target_revision, decision.target_digest,
-                    DOMAIN.WorkerRef("ccg-implementer", "run:review-final"), decision.reviewer_policy,
+                    DOMAIN.WorkerRef("another-reviewer", "run:review-final"), decision.reviewer_policy,
                 ),
             )
 
@@ -204,6 +205,7 @@ class CodingDomainTest(unittest.TestCase):
         self.assertEqual("ccg.coding-observation.v1", payload["schemaVersion"])
         self.assertEqual(observation.observation_id, payload["observationId"])
         self.assertEqual(observation.source_digest, payload["sourceDigest"])
+        self.assertEqual(REQUEST_DIGEST, payload["ownerReceipt"]["requestDigest"])
         self.assertEqual("attempt:7", payload["ownerReceipt"]["actions"][0]["fenceToken"])
         self.assertEqual("codex://runs/receipt-1", payload["ownerReceipt"]["deepLinkMetadata"]["href"])
 
@@ -211,6 +213,7 @@ class CodingDomainTest(unittest.TestCase):
         original = receipt()
         changed = DOMAIN.OwnerReceipt(
             owner_ref=original.owner_ref, receipt_id="receipt-2", request_id=original.request_id,
+            request_digest=original.request_digest,
             target_id=original.target_id, target_revision=original.target_revision,
             target_digest=original.target_digest, owner_sequence=original.owner_sequence,
             outcome=original.outcome, occurred_at=original.occurred_at,
@@ -227,6 +230,7 @@ class CodingDomainTest(unittest.TestCase):
         original = receipt()
         left = DOMAIN.OwnerReceipt(
             owner_ref=original.owner_ref, receipt_id=original.receipt_id, request_id=original.request_id,
+            request_digest=original.request_digest,
             target_id=original.target_id, target_revision=original.target_revision,
             target_digest=original.target_digest, owner_sequence=original.owner_sequence,
             outcome=original.outcome, occurred_at=original.occurred_at,
@@ -235,6 +239,7 @@ class CodingDomainTest(unittest.TestCase):
         )
         right = DOMAIN.OwnerReceipt(
             owner_ref=original.owner_ref, receipt_id=original.receipt_id, request_id=original.request_id,
+            request_digest=original.request_digest,
             target_id=original.target_id, target_revision=original.target_revision,
             target_digest=original.target_digest, owner_sequence=original.owner_sequence,
             outcome=original.outcome, occurred_at=original.occurred_at,
