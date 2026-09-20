@@ -103,7 +103,7 @@ describe('installWorkflows E2E — mcpProvider="ace-tool" (control)', () => {
     })
     expect(result.success).toBe(true)
     expect(result.errors).toEqual([])
-  })
+  }, 15000)
 
   it('generated files contain mcp__ace-tool__search_context (correct injection)', async () => {
     const planContent = readFileSync(join(tmpDir, 'commands', 'ccg', 'plan.md'), 'utf-8')

@@ -5,6 +5,9 @@ import { afterAll, describe, expect, it } from 'vitest'
 import fs from 'fs-extra'
 import { getAllCommandIds, getWorkflowById, getWorkflowConfigs, injectConfigVariables, installWorkflows, uninstallWorkflows } from '../installer'
 
+// Full installs copy the template tree and must settle before afterAll removes it.
+const FULL_INSTALL_TIMEOUT = 15_000
+
 // Helper: find package root
 function findPackageRoot(): string {
   let dir = import.meta.dirname
@@ -231,7 +234,7 @@ describe('installWorkflows E2E — mcpProvider="contextweaver"', () => {
     })
     expect(result.success).toBe(true)
     expect(result.errors).toEqual([])
-  }, 30_000)
+  }, FULL_INSTALL_TIMEOUT)
 
   it('generated command files contain contextweaver references', async () => {
     const planContent = readFileSync(join(tmpDir, 'commands', 'ccg', 'plan.md'), 'utf-8')
@@ -273,7 +276,7 @@ describe('uninstallWorkflows E2E', () => {
 
     // Verify commands directory removed
     expect(fs.existsSync(join(tmpDir, 'commands', 'ccg'))).toBe(false)
-  })
+  }, FULL_INSTALL_TIMEOUT)
 
   it('uninstall on empty dir succeeds without errors', async () => {
     const emptyDir = join(tmpdir(), `ccg-test-empty-${Date.now()}`)
@@ -304,7 +307,7 @@ describe('installWorkflows — binary installation', () => {
 
     const binaryName = process.platform === 'win32' ? 'codeagent-wrapper.exe' : 'codeagent-wrapper'
     expect(fs.existsSync(join(result.binPath!, binaryName))).toBe(true)
-  })
+  }, FULL_INSTALL_TIMEOUT)
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -340,7 +343,7 @@ describe('installWorkflows — prompts installation', () => {
     const grokFiles = readdirSync(join(promptsDir, 'grok')).filter(f => f.endsWith('.md'))
     expect(grokFiles.length).toBeGreaterThanOrEqual(7)
     expect(grokFiles).toContain('builder.md')
-  })
+  }, FULL_INSTALL_TIMEOUT)
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -364,7 +367,7 @@ describe('skills namespace isolation', () => {
     expect(fs.existsSync(join(tmpDir, 'skills', 'ccg', 'SKILL.md'))).toBe(true)
     expect(fs.existsSync(join(tmpDir, 'skills', 'ccg', 'tools'))).toBe(true)
     expect(fs.existsSync(join(tmpDir, 'skills', 'ccg', 'orchestration'))).toBe(true)
-  })
+  }, FULL_INSTALL_TIMEOUT)
 
   it('uninstall only removes skills/ccg/, preserves user skills', async () => {
     // Simulate a user-created skill at skills/my-custom-skill/SKILL.md
