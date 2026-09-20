@@ -2,7 +2,6 @@
 """Contract tests for the CCG Coding Domain topology pilot."""
 
 import importlib.util
-from hashlib import sha256
 import sys
 import unittest
 from pathlib import Path
@@ -100,8 +99,10 @@ class CodingDomainTest(unittest.TestCase):
         self.assertEqual("ccg", command["payload"]["decision"]["selectionAuthority"])
         self.assertEqual("ccg:decision:target-17:r7", command["payload"]["decision"]["domainDecisionRef"])
         self.assertNotIn("reviewerPolicyId", command["payload"]["decision"])
-        expected = "sha256:" + sha256(DOMAIN._canonical_json(command["payload"]).encode("utf-8")).hexdigest()
-        self.assertEqual(expected, command["payloadDigest"])
+        self.assertEqual(
+            "sha256:8446a6019090a9539cacccf908469777ca7ed7f41d5e351bf18123dd6196d2a1",
+            command["payloadDigest"],
+        )
 
     def test_ccg_rechecks_completed_reviewer_under_the_frozen_policy(self):
         decision = target()
