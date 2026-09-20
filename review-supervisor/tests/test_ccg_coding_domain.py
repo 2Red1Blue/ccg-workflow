@@ -2,6 +2,7 @@
 """Contract tests for the CCG Coding Domain topology pilot."""
 
 import importlib.util
+from hashlib import sha256
 import sys
 import unittest
 from pathlib import Path
@@ -47,6 +48,21 @@ def receipt(sequence=1, receipt_id="receipt-1", outcome="accepted", deep_link="c
     )
 
 
+def commit_material():
+    return DOMAIN.PersonalRuntimeCommitMaterial(
+        caller_identity="ccg:local-client",
+        issued_at="2026-09-20T10:00:00Z",
+        resolved_target={
+            "profileRevisionRef": "profile:8",
+            "harnessRef": "harness:personal",
+            "backendRef": "backend:fabric",
+        },
+        execution_input={"input": {"artifactRef": "ccg:target-17"}, "workspaceRef": "workspace:17"},
+        constraint_receipt_refs=("constraint-receipt:9",),
+        resolution_reason="ccg target revision r7",
+    )
+
+
 class CodingDomainTest(unittest.TestCase):
     def test_target_requires_distinct_implementer_and_reviewer(self):
         with self.assertRaisesRegex(DOMAIN.ContractError, "subjects must be independent"):
@@ -65,13 +81,27 @@ class CodingDomainTest(unittest.TestCase):
             target(),
             DOMAIN.PersonalAdmissionContext("delegation-17", 3, "policy:4", "profile:8", "constraint:9", "recovery:2"),
         )
-        payload = request.as_payload()
+        payload = request.as_target_reference()
         self.assertEqual("ccg", payload["target"]["selectionAuthority"])
         self.assertEqual("r7", payload["target"]["targetRevision"])
         self.assertEqual(DIGEST, payload["target"]["targetDigest"])
         self.assertNotIn("reviewerRef", payload["target"])
         self.assertNotIn("verdict", payload["target"])
         self.assertNotIn("review", payload["target"])
+
+    def test_admission_maps_to_the_public_personal_runtime_command(self):
+        request = DOMAIN.TargetAdmissionRequest(
+            "request-17", target(),
+            DOMAIN.PersonalAdmissionContext("delegation-17", 3, "policy:4", "profile:8", "constraint:9", "recovery:2"),
+        )
+        command = DOMAIN.to_delegation_commit(request, commit_material())
+        self.assertEqual("personal-runtime.delegation-admission.v1", command["schemaVersion"])
+        self.assertEqual("delegation.commit", command["commandType"])
+        self.assertEqual("ccg", command["payload"]["decision"]["selectionAuthority"])
+        self.assertEqual("ccg:decision:target-17:r7", command["payload"]["decision"]["domainDecisionRef"])
+        self.assertNotIn("reviewerPolicyId", command["payload"]["decision"])
+        expected = "sha256:" + sha256(DOMAIN._canonical_json(command["payload"]).encode("utf-8")).hexdigest()
+        self.assertEqual(expected, command["payloadDigest"])
 
     def test_ccg_rechecks_completed_reviewer_under_the_frozen_policy(self):
         decision = target()
@@ -104,21 +134,14 @@ class CodingDomainTest(unittest.TestCase):
         with self.assertRaisesRegex(DOMAIN.ContractError, "requires a recorded"):
             DOMAIN.execution_request_for(target(), DOMAIN.AdmissionOutcome("OUTCOME_UNKNOWN"))
 
-    def test_owner_receipt_flows_through_observation_to_latest_projection_idempotently(self):
-        first = DOMAIN.SourceObservation.from_owner_receipt(receipt(1, "receipt-1", "accepted"))
-        later = DOMAIN.SourceObservation.from_owner_receipt(receipt(2, "receipt-2", "completed"))
-        projection = DOMAIN.project_observations([later, first, first])
-        self.assertEqual(1, len(projection))
-        self.assertEqual("completed", projection[0].owner_outcome)
-        self.assertEqual(2, projection[0].owner_sequence)
-        self.assertEqual(later.observation_id, projection[0].source_observation_id)
-        self.assertEqual("owner.cancel", projection[0].actions[0].action_type)
-
-    def test_conflicting_owner_sequence_is_rejected_instead_of_creating_a_projection_fsm(self):
-        first = DOMAIN.SourceObservation.from_owner_receipt(receipt(1, "receipt-1", "accepted"))
-        conflict = DOMAIN.SourceObservation.from_owner_receipt(receipt(1, "receipt-2", "failed"))
-        with self.assertRaisesRegex(DOMAIN.ContractError, "owner sequence has a conflicting digest"):
-            DOMAIN.project_observations([first, conflict])
+    def test_owner_receipt_becomes_a_stable_workbench_observation_input(self):
+        observation = DOMAIN.SourceObservation.from_owner_receipt(receipt())
+        payload = observation.as_workbench_input()
+        self.assertEqual("ccg.coding-observation.v1", payload["schemaVersion"])
+        self.assertEqual(observation.observation_id, payload["observationId"])
+        self.assertEqual(observation.source_digest, payload["sourceDigest"])
+        self.assertEqual("attempt:7", payload["ownerReceipt"]["actions"][0]["fenceToken"])
+        self.assertEqual("codex://runs/receipt-1", payload["ownerReceipt"]["deepLinkMetadata"]["href"])
 
     def test_owner_action_fence_is_part_of_the_observation_identity(self):
         original = receipt()
@@ -131,33 +154,16 @@ class CodingDomainTest(unittest.TestCase):
             deep_link=original.deep_link,
         )
         self.assertNotEqual(original.digest, changed.digest)
-        with self.assertRaisesRegex(DOMAIN.ContractError, "owner sequence has a conflicting digest"):
-            DOMAIN.project_observations([
-                DOMAIN.SourceObservation.from_owner_receipt(original),
-                DOMAIN.SourceObservation.from_owner_receipt(changed),
-            ])
+        self.assertNotEqual(
+            DOMAIN.SourceObservation.from_owner_receipt(original).source_digest,
+            DOMAIN.SourceObservation.from_owner_receipt(changed).source_digest,
+        )
 
-    def test_durable_read_and_live_inspection_are_separate_and_link_failure_is_only_unavailable(self):
-        projection = DOMAIN.project_observations([DOMAIN.SourceObservation.from_owner_receipt(receipt())])[0]
-
-        class Store:
-            def __init__(self):
-                self.calls = 0
-            def read_projection(self, projection_id):
-                self.calls += 1
-                return projection if projection_id == projection.projection_id else None
-
-        class BrokenLivePort:
-            def inspect(self, deep_link):
-                raise RuntimeError("owner surface is offline")
-
-        store = Store()
-        self.assertEqual(projection, DOMAIN.read_durable_projection(store, projection.projection_id))
-        self.assertEqual(1, store.calls)
-        inspection = DOMAIN.inspect_live_detail(BrokenLivePort(), projection)
-        self.assertEqual("unavailable", inspection.status)
-        self.assertEqual("accepted", projection.owner_outcome)
-        self.assertEqual("codex://runs/receipt-1", projection.deep_link)
+    def test_ccg_does_not_implement_workbench_projection_or_live_inspection(self):
+        self.assertFalse(hasattr(DOMAIN, "WorkbenchProjection"))
+        self.assertFalse(hasattr(DOMAIN, "project_observations"))
+        self.assertFalse(hasattr(DOMAIN, "read_durable_projection"))
+        self.assertFalse(hasattr(DOMAIN, "inspect_live_detail"))
 
 
 if __name__ == "__main__":

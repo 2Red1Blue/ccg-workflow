@@ -13,7 +13,8 @@ response model IDs; it deliberately excludes reasoning and tool payloads.
 Personal AI Ecosystem. CCG remains the target and review-independence authority;
 Personal Runtime admits only personal constraints and Delegation records, Fabric
 executes an exact target revision, and Workbench reduces owner receipts through
-observations. Its durable-read and live-inspect APIs are intentionally separate.
+observations. Workbench owns its separate durable-read and live-inspect APIs;
+this module only emits their source DTO and deep-link metadata.
 See [ADR 0001](../docs/adr/0001-coding-domain-personal-ecosystem-pilot.md).
 
 Direct Claude review and analysis use `Read`, `Grep`, and `Glob` to inspect

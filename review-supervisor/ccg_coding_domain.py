@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Callable, Iterable, Mapping, Protocol, Sequence
+import json
+from typing import Mapping, Protocol, Sequence
 
 
 SCHEMA_VERSION = "ccg.coding-domain.v1"
 ADMISSION_SCHEMA_VERSION = "ccg.coding-admission.v1"
 OBSERVATION_SCHEMA_VERSION = "ccg.coding-observation.v1"
-PROJECTION_SCHEMA_VERSION = "ccg.coding-projection.v1"
+PERSONAL_RUNTIME_ADMISSION_SCHEMA_VERSION = "personal-runtime.delegation-admission.v1"
 
 
 class ContractError(ValueError):
@@ -42,6 +43,12 @@ def _digest(value: str, label: str) -> str:
 
 def _canonical_digest(parts: Sequence[str]) -> str:
     return "sha256:" + sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _canonical_json(value: object) -> str:
+    """Match Personal Runtime's public canonical JSON digest encoding."""
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 @dataclass(frozen=True)
@@ -163,10 +170,10 @@ class PersonalAdmissionContext:
 
 @dataclass(frozen=True)
 class TargetAdmissionRequest:
-    """The thin CCG -> Personal Runtime admission payload.
+    """CCG's target reference plus PR-owned context references.
 
-    The payload carries a target identity and personal-context *references* only.
-    It has no CCG review report, verdict, or mutable task state.
+    This is not a second PR command schema. ``to_delegation_commit`` below
+    emits the published Personal Runtime command envelope.
     """
 
     request_id: str
@@ -176,7 +183,7 @@ class TargetAdmissionRequest:
     def __post_init__(self) -> None:
         _nonblank(self.request_id, "admission request_id")
 
-    def as_payload(self) -> dict[str, object]:
+    def as_target_reference(self) -> dict[str, object]:
         return {
             "schemaVersion": ADMISSION_SCHEMA_VERSION,
             "requestId": self.request_id,
@@ -202,6 +209,65 @@ class TargetAdmissionRequest:
                 "recoveryPolicyRef": self.personal.recovery_policy_ref,
             },
         }
+
+
+@dataclass(frozen=True)
+class PersonalRuntimeCommitMaterial:
+    """Inputs required by PR's public command but not owned by a CCG review."""
+
+    caller_identity: str
+    issued_at: str
+    resolved_target: Mapping[str, object]
+    execution_input: Mapping[str, object]
+    constraint_receipt_refs: tuple[str, ...]
+    resolution_reason: str
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("caller_identity", self.caller_identity),
+            ("issued_at", self.issued_at),
+            ("resolution_reason", self.resolution_reason),
+        ):
+            _nonblank(value, label)
+        if not self.resolved_target or not self.execution_input:
+            raise ContractError("Personal Runtime commit material requires target and execution input")
+        if any(not isinstance(ref, str) or not ref.strip() for ref in self.constraint_receipt_refs):
+            raise ContractError("constraint_receipt_refs must contain non-blank strings")
+
+
+def to_delegation_commit(
+    request: TargetAdmissionRequest,
+    material: PersonalRuntimeCommitMaterial,
+) -> dict[str, object]:
+    """Produce PR's published ``delegation.commit`` envelope without private calls."""
+
+    payload = {
+        "expectedDelegationVersion": request.personal.expected_delegation_version,
+        "decision": {
+            "delegationId": request.personal.delegation_id,
+            "selectionAuthority": "ccg",
+            "policyRevision": request.personal.policy_revision_ref,
+            "profileRevisionRef": request.personal.profile_revision_ref,
+            "constraintSetRef": request.personal.constraint_set_ref,
+            "resolvedTarget": dict(material.resolved_target),
+            "targetDigest": request.target.target_digest,
+            "constraintReceiptRefs": list(material.constraint_receipt_refs),
+            "resolutionReason": material.resolution_reason,
+            "recoveryPolicyRef": request.personal.recovery_policy_ref,
+            "domainDecisionRef": request.target.domain_decision_ref,
+        },
+        "execution": {"kind": "ensure", "value": dict(material.execution_input)},
+    }
+    return {
+        "schemaVersion": PERSONAL_RUNTIME_ADMISSION_SCHEMA_VERSION,
+        "commandId": request.request_id,
+        "commandType": "delegation.commit",
+        "payloadDigest": "sha256:" + sha256(_canonical_json(payload).encode("utf-8")).hexdigest(),
+        "payload": payload,
+        "callerIdentity": material.caller_identity,
+        "expectedAggregateVersion": request.personal.expected_delegation_version,
+        "issuedAt": material.issued_at,
+    }
 
 
 @dataclass(frozen=True)
@@ -231,14 +297,18 @@ class AdmissionOutcome:
 
 
 class PersonalRuntimeAdmissionPort(Protocol):
-    def admit(self, request: TargetAdmissionRequest) -> AdmissionOutcome:
-        """Persist or report a PR-owned admission outcome for one idempotency key."""
+    def commit(self, command: Mapping[str, object]) -> AdmissionOutcome:
+        """Consume only PR's published ``delegation.commit`` envelope."""
 
 
-def admit_target(port: PersonalRuntimeAdmissionPort, request: TargetAdmissionRequest) -> AdmissionOutcome:
+def admit_target(
+    port: PersonalRuntimeAdmissionPort,
+    request: TargetAdmissionRequest,
+    material: PersonalRuntimeCommitMaterial,
+) -> AdmissionOutcome:
     """Call the external PR seam without interpreting an outcome as review truth."""
 
-    outcome = port.admit(request)
+    outcome = port.commit(to_delegation_commit(request, material))
     if not isinstance(outcome, AdmissionOutcome):
         raise ContractError("Personal Runtime admission port returned an invalid outcome")
     return outcome
@@ -363,7 +433,7 @@ class OwnerReceipt:
 
 @dataclass(frozen=True)
 class SourceObservation:
-    """Workbench's input, derived only from a durable owner receipt."""
+    """A stable input DTO for the Workbench-owned observation/projection path."""
 
     observation_id: str
     owner_receipt: OwnerReceipt
@@ -379,93 +449,34 @@ class SourceObservation:
             source_digest=receipt.digest,
         )
 
-
-@dataclass(frozen=True)
-class WorkbenchProjection:
-    """A rebuildable projection; it contains no local transition or review state."""
-
-    projection_id: str
-    source_observation_id: str
-    owner_ref: str
-    target_id: str
-    target_revision: str
-    owner_sequence: int
-    owner_outcome: str
-    actions: tuple[OwnerActionDescriptor, ...]
-    deep_link: str | None
-
-
-def project_observations(observations: Iterable[SourceObservation]) -> tuple[WorkbenchProjection, ...]:
-    """Deterministically reduce owner observations without inventing owner state."""
-
-    seen_receipts: dict[tuple[str, str], str] = {}
-    sequences: dict[tuple[str, str], str] = {}
-    current: dict[tuple[str, str], SourceObservation] = {}
-    for observation in observations:
-        receipt = observation.owner_receipt
-        receipt_key = (receipt.owner_ref, receipt.receipt_id)
-        prior = seen_receipts.get(receipt_key)
-        if prior is not None:
-            if prior != observation.source_digest:
-                raise ContractError("owner receipt replay has a conflicting digest")
-            continue
-        seen_receipts[receipt_key] = observation.source_digest
-        target_key = (receipt.owner_ref, receipt.target_id)
-        sequence_key = (target_key[0], target_key[1], str(receipt.owner_sequence))
-        sequence_prior = sequences.get(sequence_key)
-        if sequence_prior is not None and sequence_prior != observation.source_digest:
-            raise ContractError("owner sequence has a conflicting digest")
-        sequences[sequence_key] = observation.source_digest
-        existing = current.get(target_key)
-        if existing is None or receipt.owner_sequence > existing.owner_receipt.owner_sequence:
-            current[target_key] = observation
-
-    projections = []
-    for (owner_ref, target_id), observation in sorted(current.items()):
-        receipt = observation.owner_receipt
-        projections.append(WorkbenchProjection(
-            projection_id="ccg-projection:" + sha256(
-                f"{owner_ref}\0{target_id}".encode("utf-8")
-            ).hexdigest(),
-            source_observation_id=observation.observation_id,
-            owner_ref=owner_ref,
-            target_id=target_id,
-            target_revision=receipt.target_revision,
-            owner_sequence=receipt.owner_sequence,
-            owner_outcome=receipt.outcome,
-            actions=receipt.actions,
-            deep_link=receipt.deep_link,
-        ))
-    return tuple(projections)
-
-
-class DurableProjectionStore(Protocol):
-    def read_projection(self, projection_id: str) -> WorkbenchProjection | None:
-        """Read only a durable Workbench projection."""
-
-
-class LiveDetailPort(Protocol):
-    def inspect(self, deep_link: str) -> Mapping[str, object]:
-        """Inspect a live owner surface; it must not persist or project data."""
-
-
-@dataclass(frozen=True)
-class LiveInspection:
-    status: str
-    detail: Mapping[str, object] | None = None
-
-
-def read_durable_projection(store: DurableProjectionStore, projection_id: str) -> WorkbenchProjection | None:
-    _nonblank(projection_id, "projection_id")
-    return store.read_projection(projection_id)
-
-
-def inspect_live_detail(port: LiveDetailPort, projection: WorkbenchProjection) -> LiveInspection:
-    """Keep failed navigation as surface availability, never a projection mutation."""
-
-    if projection.deep_link is None:
-        return LiveInspection(status="unavailable")
-    try:
-        return LiveInspection(status="available", detail=port.inspect(projection.deep_link))
-    except Exception:
-        return LiveInspection(status="unavailable")
+    def as_workbench_input(self) -> dict[str, object]:
+        receipt = self.owner_receipt
+        return {
+            "schemaVersion": OBSERVATION_SCHEMA_VERSION,
+            "observationId": self.observation_id,
+            "sourceDigest": self.source_digest,
+            "ownerReceipt": {
+                "schemaVersion": receipt.schema_version,
+                "ownerRef": receipt.owner_ref,
+                "receiptId": receipt.receipt_id,
+                "requestId": receipt.request_id,
+                "targetId": receipt.target_id,
+                "targetRevision": receipt.target_revision,
+                "targetDigest": receipt.target_digest,
+                "ownerSequence": receipt.owner_sequence,
+                "outcome": receipt.outcome,
+                "occurredAt": receipt.occurred_at,
+                "actions": [
+                    {
+                        "actionType": action.action_type,
+                        "ownerRef": action.owner_ref,
+                        "expectedOwnerRevision": action.expected_owner_revision,
+                        "fenceToken": action.fence_token,
+                        "payloadDigest": action.payload_digest,
+                    }
+                    for action in receipt.actions
+                ],
+                **({"deepLinkMetadata": {"ownerRef": receipt.owner_ref, "href": receipt.deep_link}}
+                   if receipt.deep_link is not None else {}),
+            },
+        }

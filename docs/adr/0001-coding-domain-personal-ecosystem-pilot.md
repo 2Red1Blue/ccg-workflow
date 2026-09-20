@@ -23,7 +23,7 @@ CCG rejection or review results. The request carries CCG target identity and
 PR-owned context references only; it excludes reports, verdicts, task state,
 claims, evidence, and repair state.
 
-The adapter maps this request to Personal Runtime's public
+The CCG boundary maps this request to Personal Runtime's public
 `delegation.commit` command: its decision uses
 `selectionAuthority="ccg"` and the immutable `domainDecisionRef`. It must not
 substitute a private PR store call or invent another admission protocol.
@@ -33,7 +33,8 @@ executes that request. It may reject an ineligible/stale exact reference, but
 it must not pick a newer target revision or decide that a CCG review passed.
 Any revision upgrade is a fresh CCG decision and a fresh request ID.
 
-Workbench consumes owner receipts through this fixed direction:
+Workbench consumes the CCG-emitted source-observation input through this fixed
+direction:
 
 ```text
 owner receipt -> SourceObservation -> rebuildable Workbench projection
@@ -41,16 +42,15 @@ owner receipt -> SourceObservation -> rebuildable Workbench projection
 
 An owner receipt includes owner and receipt identities, request ID, target
 identity, owner sequence, outcome, request digest, occurrence time, and any
-owner-advertised action descriptors. A receipt replay is idempotent; a changed
-digest for the same receipt or owner sequence is a conflict. The digest covers
-the complete action descriptor, including its owner revision and fence token.
-The reducer keeps
-the newest owner sequence and never invents action state transitions.
+owner-advertised action descriptors. The CCG source digest covers the complete
+action descriptor, including its owner revision and fence token. Workbench owns
+receipt replay idempotency, ordering, conflict handling, the reducer, durable
+reads, and projection persistence; CCG neither implements nor selects them.
 
-`read_durable_projection` and `inspect_live_detail` are separate APIs. Live
-inspect data is non-durable and cannot enter observations or projections. A
-deep-link failure reports only `unavailable`; it does not alter the target,
-receipt, observation, action, or projection.
+Workbench's `read_durable_projection` and its owner-specific live inspect are
+separate APIs. Live-inspect data is non-durable and cannot enter observations
+or projections. A deep-link failure reports only `unavailable`; it does not
+alter the target, receipt, observation, action, or projection.
 
 ## Consequences
 
@@ -58,15 +58,16 @@ receipt, observation, action, or projection.
 - This module is a pure boundary adapter. It opens no network connection and
   persists no state; real ports remain owned and released by their respective
   repositories.
-- The PR wire adapter must translate this request to its published
-  `delegation.commit` contract and authenticate its CCG caller. The pilot does
-  not claim that a live PR/Fabric/Workbench deployment exists.
+- The CCG mapper emits the published `delegation.commit` envelope. Personal
+  Runtime still authenticates its CCG caller and validates its own context. The
+  pilot does not claim that a live PR/Fabric/Workbench deployment exists.
 - The review-supervisor installer deploys this module as a private support file
   alongside the supervisor so the installed package contains the same contract.
 
 ## Verification
 
 `test_ccg_coding_domain.py` covers the independence predicate, absence of
-review truth from admission, PR outcome separation, receipt-to-observation-to-
-projection idempotency and ordering, conflicting-owner rejection, durable/live
-API separation, and deep-link failure isolation.
+review truth from admission, exact public PR command mapping, PR outcome
+separation, exact Fabric target binding, and the owner-receipt to stable
+source-observation DTO (including action fence identity). Workbench owns the
+cross-repository observation-to-projection and durable/live-inspect tests.
