@@ -41,6 +41,35 @@ Missing endpoints before the first request byte are `UNAVAILABLE`; a lost acknow
 after a write is `OUTCOME_UNKNOWN` and is never retried automatically. The token
 is read only from the named environment variable and is never printed.
 
+The supervisor can connect this consumer to the real dual-leaf review path with
+`review --coding-admission-config <path>` (or
+`CCG_CODING_ADMISSION_CONFIG`). The JSON file contains only `admission` (`socket`,
+`tokenEnv`, optional `timeoutMs`) and `request` context (`targetId`,
+`targetRevision`, `reviewerPolicy`, `executionTargetRef`, `implementerReceipt`,
+`personal`, and `commitMaterial`). The supervisor reads and parses that file
+exactly once, derives the reviewer execution reference from the current
+review-leaf terminal receipt, and calls this module's existing
+`execute_coding_admission` only after both leaves finish with `APPROVE`. Both
+review leaves are reviewers, never the implementer: the implementer must be the
+CCG-owned `implementerReceipt`, and any receipt that reuses a review-leaf
+namespace, subject, digest, or execution identity is rejected before the socket
+opens. Precomputed digests, target worker identities, reviewer attestations, PR
+state, and Fabric requests are rejected from the config, as is an in-file
+`enabled` flag — admission is only ever skipped with the explicit
+`--disable-coding-admission` switch, never silently.
+
+The admission command ID is a pure function of the immutable CCG decision, so a
+retry that reuses the same leaf receipts resubmits the identical command and
+execution identities instead of minting new ones from the retry run. A recorded
+`RECORDED` receipt is required for an overall successful review; a definite
+rejection is recorded as `rejected`, a lost acknowledgement after the request
+was written is `outcome_unknown` and is carried forward on retry rather than
+resubmitted, and an endpoint that is missing before the first byte is
+`unavailable`. A cancellation before any admission byte records
+`not_attempted`/`cancelled` and a cancelled terminal review, never an admission
+failure. Without this option, or when the review is `REQUEST_CHANGES`, the
+existing review behavior is unchanged.
+
 Direct Claude review and analysis use `Read`, `Grep`, and `Glob` to inspect
 `REQUEST.md` and `CHANGES.patch` or `CONTEXT.md` inside the run bundle. Initial
 stdin contains only leaf instructions; request and source bodies stay in files.

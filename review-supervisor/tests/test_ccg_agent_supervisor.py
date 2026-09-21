@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import hashlib
 import os
+import re
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -21,6 +25,7 @@ assert _spec and _spec.loader
 supervisor = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = supervisor
 _spec.loader.exec_module(supervisor)
+import ccg_coding_domain as coding_domain
 
 
 FAKE_CODEX = r'''#!/usr/bin/env python3
@@ -213,6 +218,7 @@ class SupervisorReviewTest(unittest.TestCase):
         extra_args: list[str] | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         env = os.environ.copy()
+        env.pop("CCG_CODING_ADMISSION_CONFIG", None)
         env["TEST_SYNC_DIR"] = str(self.sync)
         env["CCG_SUPERVISOR_TEST_MODE"] = "1"
         if environment:
@@ -251,6 +257,7 @@ class SupervisorReviewTest(unittest.TestCase):
         timeout: int = 10,
     ) -> subprocess.CompletedProcess[bytes]:
         env = os.environ.copy()
+        env.pop("CCG_CODING_ADMISSION_CONFIG", None)
         env["TEST_SYNC_DIR"] = str(self.sync)
         env["CCG_SUPERVISOR_TEST_MODE"] = "1"
         return subprocess.run(
@@ -293,11 +300,158 @@ class SupervisorReviewTest(unittest.TestCase):
         self.assertEqual(1, len(statuses))
         return json.loads(statuses[0].read_text(encoding="utf-8"))
 
+    def _run_id(self, completed: subprocess.CompletedProcess[bytes]) -> str:
+        match = re.search(r"run_id=([0-9a-f-]+)", completed.stderr.decode(errors="replace"))
+        self.assertIsNotNone(match, completed.stderr.decode(errors="replace"))
+        return match.group(1)
+
+    def _status_of(self, run_id: str) -> dict[str, object]:
+        path = self.run_root / run_id / "status.json"
+        self.assertTrue(path.is_file(), path)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _coding_admission_config(self, socket_path: str, **request_overrides: object) -> Path:
+        config = {
+            "admission": {
+                "socket": socket_path,
+                "tokenEnv": "CCG_TEST_ADMISSION_TOKEN",
+            },
+            "request": {
+                "targetId": "coding:target-supervisor",
+                "targetRevision": "r1",
+                "reviewerPolicy": {
+                    "id": "dual-leaf",
+                    "revision": "v2",
+                    "digest": "sha256:" + "b" * 64,
+                    "independenceClass": "separate-subject-and-run",
+                },
+                "executionTargetRef": "personal-runtime:resolved-target",
+                # CCG owns the real implementer receipt; the review leaves never
+                # become the implementer.
+                "implementerReceipt": {
+                    "subject": "ccg:implementer:local",
+                    "executionRef": "ccg:implementation:implement-run-1",
+                    "receiptDigest": "sha256:" + "d" * 64,
+                },
+                "personal": {
+                    "delegationId": "delegation-supervisor",
+                    "expectedDelegationVersion": 0,
+                    "policyRevisionRef": "policy-main@1",
+                    "profileRevisionRef": "profile-main@1",
+                    "constraintSetRef": "constraints-main@1",
+                    "recoveryPolicyRef": "recovery-default@1",
+                },
+                "commitMaterial": {
+                    "callerIdentity": "ccg-supervisor-test",
+                    "issuedAt": "2026-09-21T00:00:00Z",
+                    "resolvedTarget": {
+                        "profileRevisionRef": "profile-main@1",
+                        "harnessRef": "codex",
+                        "backendRef": "local",
+                    },
+                    "executionInput": {
+                        "input": {"prompt": "implement supervisor target"},
+                        "workspaceRef": "workspace:supervisor",
+                    },
+                    "constraintReceiptRefs": [],
+                    "resolutionReason": "frozen supervisor target r1",
+                },
+            },
+        }
+        config["request"].update(request_overrides)
+        path = self.root / "coding-admission.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def _admission_server(self, *, mode: str = "receipt"):
+        class Server:
+            def __enter__(self):
+                self.directory = tempfile.TemporaryDirectory()
+                os.chmod(self.directory.name, 0o700)
+                self.path = str(Path(self.directory.name) / "admission.sock")
+                self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.listener.bind(self.path)
+                os.chmod(self.path, 0o600)
+                self.listener.listen(4)
+                self.commands: list[dict[str, object]] = []
+                self.thread = threading.Thread(target=self._serve, daemon=True)
+                self.thread.start()
+                return self
+
+            @property
+            def command(self):
+                return self.commands[0] if self.commands else None
+
+            def _serve(self):
+                while True:
+                    try:
+                        connection, _ = self.listener.accept()
+                    except OSError:
+                        return
+                    with connection:
+                        raw = bytearray()
+                        while True:
+                            chunk = connection.recv(65_536)
+                            if not chunk:
+                                break
+                            raw.extend(chunk)
+                        if not raw:
+                            continue
+                        marker = raw.find(b"\r\n\r\n")
+                        command = json.loads(bytes(raw[marker + 4 :]))
+                        self.commands.append(command)
+                        if mode == "abort":
+                            # Request written, connection dropped before any
+                            # response: transport outcome is unknown.
+                            continue
+                        if mode == "reject":
+                            body = b'{"error":"admission rejected"}'
+                            status_line = b"HTTP/1.1 503 Service Unavailable"
+                        else:
+                            body = json.dumps(
+                                {
+                                    "schemaVersion": "personal-runtime.delegation-admission-receipt.v1",
+                                    "callerId": command["callerIdentity"],
+                                    "commandId": command["commandId"],
+                                    "payloadDigest": command["payloadDigest"],
+                                    "contextDigest": "sha256:" + "c" * 64,
+                                    "status": "RECORDED",
+                                    "delegationId": command["payload"]["decision"]["delegationId"],
+                                    "delegationRevision": 1,
+                                    "delegationVersion": 1,
+                                    "outboxCommandId": coding_domain.personal_runtime_outbox_command_id(
+                                        command["callerIdentity"], command["commandId"]
+                                    ),
+                                    "recordedAt": "2026-09-21T00:00:01Z",
+                                },
+                                separators=(",", ":"),
+                            ).encode()
+                            status_line = b"HTTP/1.1 200 OK"
+                            if mode == "invalid_receipt":
+                                value = json.loads(body)
+                                value["payloadDigest"] = "sha256:" + "f" * 64
+                                body = json.dumps(value, separators=(",", ":")).encode()
+                        connection.sendall(
+                            status_line
+                            + b"\r\nContent-Type: application/json\r\n"
+                            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                            + body
+                        )
+
+            def __exit__(self, _kind, _error, _traceback):
+                self.listener.close()
+                self.thread.join(timeout=2)
+                self.directory.cleanup()
+
+        return Server()
+
     def test_dual_review_is_concurrent_isolated_and_successful(self) -> None:
         completed = self._review()
         self.assertEqual(0, completed.returncode, completed.stderr.decode())
         status = self._status()
         self.assertEqual("succeeded", status["state"])
+        self.assertNotIn("coding_admission", status)
         self.assertEqual("succeeded", status["backends"]["codex"]["state"])
         self.assertEqual("succeeded", status["backends"]["claude"]["state"])
         run_directory = next(self.run_root.glob("*/status.json")).parent
@@ -305,6 +459,350 @@ class SupervisorReviewTest(unittest.TestCase):
         for report in (run_directory / "codex.report.md", run_directory / "claude.report.md"):
             self.assertTrue(report.is_file())
             self.assertEqual(0o600, stat.S_IMODE(report.stat().st_mode))
+
+    def test_real_implementer_receipt_and_review_leaf_admit_independently(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path)
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(0, completed.returncode, completed.stderr.decode())
+        status = self._status()
+        self.assertEqual("succeeded", status["state"])
+        admission = status["coding_admission"]
+        self.assertEqual("recorded", admission["state"])
+        # The implementer is the CCG receipt, not a review leaf.
+        self.assertEqual("ccg:implementer:local", admission["implementer"]["subject"])
+        self.assertEqual("ccg:implementation:implement-run-1", admission["implementer"]["executionRef"])
+        self.assertNotIn(":leaf-terminal:", admission["implementer"]["executionRef"])
+        # The reviewer is the frozen review leaf.
+        self.assertEqual("ccg:claude:reviewer", admission["reviewer"]["subject"])
+        self.assertIn(":claude:", admission["reviewer"]["executionRef"])
+        self.assertNotEqual(admission["implementer"]["executionRef"], admission["reviewer"]["executionRef"])
+        self.assertEqual("ccg-supervisor-test", server.command["callerIdentity"])
+        self.assertEqual(
+            admission["domain_decision_ref"],
+            "ccg:decision:" + admission["target_digest"].removeprefix("sha256:"),
+        )
+        self.assertEqual(
+            admission["command_id"],
+            coding_domain.coding_admission_command_id(admission["target_digest"]),
+        )
+        self.assertEqual(server.command["commandId"], admission["command_id"])
+
+    def test_review_leaf_cannot_masquerade_as_implementer(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(
+                server.path,
+                implementerReceipt={
+                    "subject": "ccg:codex:reviewer",
+                    "executionRef": "ccg:leaf-terminal:deadbeef:codex:" + "e" * 64,
+                    "receiptDigest": "sha256:" + "d" * 64,
+                },
+            )
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(1, completed.returncode)
+        status = self._status()
+        self.assertEqual("failed", status["state"])
+        self.assertEqual("rejected", status["coding_admission"]["state"])
+        self.assertIn("review-leaf", status["coding_admission"]["error"])
+        self.assertIsNone(server.command)
+
+    def test_implementer_subject_must_differ_from_reviewer(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(
+                server.path,
+                reviewerSubject="ccg:implementer:local",
+            )
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(1, completed.returncode)
+        status = self._status()
+        self.assertEqual("failed", status["state"])
+        self.assertEqual("rejected", status["coding_admission"]["state"])
+        self.assertIsNone(server.command)
+
+    def test_implementer_subject_must_differ_from_either_review_leaf(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(
+                server.path,
+                implementerReceipt={
+                    "subject": "ccg:codex:reviewer",
+                    "executionRef": "ccg:implementation:implement-run-1",
+                    "receiptDigest": "sha256:" + "d" * 64,
+                },
+            )
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("independent", self._status()["coding_admission"]["error"])
+        self.assertIsNone(server.command)
+
+    def test_implementer_digest_must_differ_from_review_receipts(self) -> None:
+        claude_report = (
+            b"## Critical\nNone\n## Warning\nNone\n## Info\n"
+            b"Fake Claude review\n## Verdict\nAPPROVE\n"
+        )
+        with self._admission_server() as server:
+            config = self._coding_admission_config(
+                server.path,
+                implementerReceipt={
+                    "subject": "ccg:implementer:local",
+                    "executionRef": "ccg:implementation:implement-run-1",
+                    "receiptDigest": "sha256:" + hashlib.sha256(claude_report).hexdigest(),
+                },
+            )
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("independent", self._status()["coding_admission"]["error"])
+        self.assertIsNone(server.command)
+
+    def test_admission_rejection_cannot_masquerade_as_review_success(self) -> None:
+        with self._admission_server(mode="reject") as server:
+            config = self._coding_admission_config(server.path)
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(1, completed.returncode)
+        status = self._status()
+        self.assertEqual("failed", status["state"])
+        self.assertEqual("rejected", status["coding_admission"]["state"])
+        self.assertEqual("succeeded", status["backends"]["codex"]["state"])
+        self.assertEqual("succeeded", status["backends"]["claude"]["state"])
+        self.assertIn("coding admission failed", status["supervisor_error"])
+
+    def test_outcome_unknown_is_distinct_and_never_retried(self) -> None:
+        with self._admission_server(mode="abort") as server:
+            config = self._coding_admission_config(server.path)
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+            self.assertEqual(1, completed.returncode)
+            source = self._status_of(self._run_id(completed))
+            self.assertEqual("failed", source["state"])
+            self.assertEqual("outcome_unknown", source["coding_admission"]["state"])
+            self.assertEqual(1, len(server.commands))
+            # A retry must carry the unknown outcome forward, never resubmit.
+            retried = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=[
+                    "--coding-admission-config",
+                    str(config),
+                    "--retry-run",
+                    self._run_id(completed),
+                ],
+            )
+            self.assertEqual(1, retried.returncode)
+            status = self._status_of(self._run_id(retried))
+            self.assertEqual("outcome_unknown", status["coding_admission"]["state"])
+            self.assertEqual(self._run_id(completed), status["coding_admission"]["carried_from_run"])
+            self.assertEqual(1, len(server.commands))
+
+    def test_retry_cannot_drop_prior_admission_context(self) -> None:
+        with self._admission_server(mode="abort") as server:
+            config = self._coding_admission_config(server.path)
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+            self.assertEqual(1, completed.returncode)
+            retried = self._review(extra_args=["--retry-run", self._run_id(completed)])
+        self.assertEqual(1, retried.returncode)
+        status = self._status_of(self._run_id(retried))
+        self.assertIn("configuration presence changed", status["supervisor_error"])
+        self.assertEqual(1, len(server.commands))
+
+    def test_invalid_success_receipt_is_outcome_unknown(self) -> None:
+        with self._admission_server(mode="invalid_receipt") as server:
+            config = self._coding_admission_config(server.path)
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(1, completed.returncode)
+        status = self._status()
+        self.assertEqual("failed", status["state"])
+        self.assertEqual("outcome_unknown", status["coding_admission"]["state"])
+        self.assertEqual(1, len(server.commands))
+
+    def test_unavailable_is_distinct_from_unknown(self) -> None:
+        config = self._coding_admission_config(str(self.root / "missing" / "admission.sock"))
+        completed = self._review(
+            environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+            extra_args=["--coding-admission-config", str(config)],
+        )
+        self.assertEqual(1, completed.returncode)
+        status = self._status()
+        self.assertEqual("failed", status["state"])
+        self.assertEqual("unavailable", status["coding_admission"]["state"])
+
+    def test_retry_reuses_source_identity_decision_and_command_id(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path)
+            environment = {"CCG_TEST_ADMISSION_TOKEN": "test-token"}
+            first = self._review(
+                environment=environment,
+                extra_args=["--coding-admission-config", str(config)],
+            )
+            self.assertEqual(0, first.returncode, first.stderr.decode())
+            first_admission = self._status_of(self._run_id(first))["coding_admission"]
+            retried = self._review(
+                environment=environment,
+                extra_args=[
+                    "--coding-admission-config",
+                    str(config),
+                    "--retry-run",
+                    self._run_id(first),
+                ],
+            )
+            self.assertEqual(0, retried.returncode, retried.stderr.decode())
+            second_admission = self._status_of(self._run_id(retried))["coding_admission"]
+        # Same immutable decision, same command ID and execution identities.
+        self.assertEqual(first_admission["command_id"], second_admission["command_id"])
+        self.assertEqual(first_admission["target_digest"], second_admission["target_digest"])
+        self.assertEqual(first_admission["implementer"], second_admission["implementer"])
+        self.assertEqual(first_admission["reviewer"], second_admission["reviewer"])
+        self.assertEqual(self._run_id(first), second_admission["carried_from_run"])
+        # The recorded receipt was reused, not resubmitted.
+        self.assertEqual(1, len(server.commands))
+
+    def test_cancellation_before_admission_is_not_an_admission_failure(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "TEST_SYNC_DIR": str(self.sync),
+                    "CCG_SUPERVISOR_TEST_MODE": "1",
+                    "FAKE_SLEEP": "30",
+                    "CCG_TEST_ADMISSION_TOKEN": "test-token",
+                }
+            )
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(SUPERVISOR),
+                    "--root",
+                    str(self.run_root),
+                    "review",
+                    "--workdir",
+                    str(self.workdir),
+                    "--diff-file",
+                    str(self.patch),
+                    "--codex-cli",
+                    str(self.codex),
+                    "--wrapper",
+                    str(self.wrapper),
+                    "--timeout-seconds",
+                    "20",
+                    "--coding-admission-config",
+                    str(config),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            assert process.stdin is not None
+            process.stdin.write(b"Review before cancellation.")
+            process.stdin.close()
+            process.stdin = None
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not (
+                (self.sync / "codex.started").exists() and (self.sync / "claude.started").exists()
+            ):
+                time.sleep(0.02)
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=8)
+        self.assertEqual(
+            128 + signal.SIGTERM, process.returncode, (stdout + stderr).decode(errors="replace")
+        )
+        status = self._status()
+        self.assertEqual("cancelled", status["state"])
+        self.assertEqual("not_attempted", status["coding_admission"]["state"])
+        self.assertEqual("cancelled", status["coding_admission"]["reason"])
+        self.assertIsNone(server.command)
+
+    def test_request_changes_does_not_attempt_admission(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path)
+            completed = self._review(
+                environment={
+                    "CCG_TEST_ADMISSION_TOKEN": "test-token",
+                    "FAKE_EXPLAINED_REQUEST_CHANGES": "1",
+                },
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(0, completed.returncode, completed.stderr.decode())
+        status = self._status()
+        self.assertEqual("succeeded", status["state"])
+        self.assertEqual("not_attempted", status["coding_admission"]["state"])
+        self.assertEqual("review_not_approved", status["coding_admission"]["reason"])
+        self.assertIsNone(server.command)
+
+    def test_in_file_disable_flag_is_rejected_not_silently_honored(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path, enabled=False)
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=["--coding-admission-config", str(config)],
+            )
+        self.assertEqual(1, completed.returncode)
+        status = self._status()
+        self.assertEqual("failed", status["state"])
+        self.assertIn("receipt-bound fields", status["supervisor_error"])
+        self.assertIsNone(server.command)
+
+    def test_config_rejects_flat_and_unknown_fields(self) -> None:
+        base = {
+            "socket": "/tmp/unused.sock",
+            "tokenEnv": "CCG_TEST_ADMISSION_TOKEN",
+        }
+        with self.assertRaisesRegex(ValueError, "top-level fields"):
+            supervisor.parse_coding_admission_config(json.dumps(base).encode())
+
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path)
+            value = json.loads(config.read_text(encoding="utf-8"))
+            value["admission"]["unexpected"] = True
+            config.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "admission fields"):
+                supervisor.parse_coding_admission_config(config.read_bytes())
+
+    def test_empty_environment_config_path_fails_closed(self) -> None:
+        completed = self._review(environment={"CCG_CODING_ADMISSION_CONFIG": ""})
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("config path must be non-blank", self._status()["supervisor_error"])
+
+    def test_explicit_disable_keeps_legacy_review_path(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path)
+            completed = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=[
+                    "--coding-admission-config",
+                    str(config),
+                    "--disable-coding-admission",
+                ],
+            )
+        self.assertEqual(0, completed.returncode, completed.stderr.decode())
+        status = self._status()
+        self.assertEqual("succeeded", status["state"])
+        self.assertNotIn("coding_admission", status)
+        self.assertIsNone(server.command)
 
     def test_codex_review_defaults_to_luna_and_records_model(self) -> None:
         args_file = self.sync / "codex.args"

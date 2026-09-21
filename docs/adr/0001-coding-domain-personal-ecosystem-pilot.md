@@ -92,7 +92,7 @@ alter the target, receipt, observation, action, or projection.
   builder supports the exact integer JSON subset and rejects floats instead of
   guessing at ECMAScript number serialization. Its parity and service path are
   gated against clean exact pin
-  `1ad2df9deeb3f9cd89fc5d0adab92c90bf592cde`; the builder should move to a
+  `e7756e05e1b5d56b27a918046571b22b2666694f`; the builder should move to a
   published Personal Runtime client seam when that seam exists.
 - The review-supervisor installer deploys this module as a private support file
   and as the executable `ccg-coding-domain` consumer. The npm package exposes

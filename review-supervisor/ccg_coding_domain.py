@@ -207,6 +207,19 @@ def coding_domain_decision_ref(target_digest: str) -> str:
     return "ccg:decision:" + digest.removeprefix("sha256:")
 
 
+def coding_admission_command_id(target_digest: str) -> str:
+    """Derive the immutable admission command identity from the CCG decision.
+
+    The command ID is a pure function of the verified target digest, so a retry
+    of the same immutable decision resubmits the identical command ID while any
+    changed worker, policy, or execution target yields a fresh one.  Personal
+    Runtime still owns command dedup and the durable receipt.
+    """
+
+    digest = _digest(target_digest, "target_digest")
+    return "ccg:admission:" + digest.removeprefix("sha256:")
+
+
 @dataclass(frozen=True)
 class CodingTargetDecision:
     """An immutable CCG-owned decision; it intentionally contains no verdict."""
@@ -349,6 +362,96 @@ class PersonalRuntimeCommitMaterial:
             raise ContractError("Personal Runtime commit material requires target and execution input")
         if any(not isinstance(ref, str) or not ref.strip() for ref in self.constraint_receipt_refs):
             raise ContractError("constraint_receipt_refs must contain non-blank strings")
+
+
+def build_coding_admission_request(
+    *,
+    request_id: str,
+    target_id: str,
+    target_revision: str,
+    implementer: WorkerRef,
+    reviewer: WorkerRef,
+    reviewer_policy: ReviewerPolicy,
+    execution_target_ref: str,
+    personal: PersonalAdmissionContext,
+    material: PersonalRuntimeCommitMaterial,
+    deep_link: str | None = None,
+) -> dict[str, object]:
+    """Build one wire request from CCG facts and independent leaf receipts.
+
+    The caller supplies only the stable target/policy and Personal Runtime
+    context.  This function computes the CCG target digest and binds the same
+    reviewer identity into the attestation; it never accepts caller-supplied
+    target or decision digests and never constructs a Fabric request.
+    """
+
+    target_digest = coding_target_digest(
+        target_id,
+        target_revision,
+        implementer,
+        reviewer,
+        reviewer_policy,
+        execution_target_ref,
+    )
+    request: dict[str, object] = {
+        "schemaVersion": CODING_ADMISSION_REQUEST_SCHEMA_VERSION,
+        "requestId": _nonblank(request_id, "admission request_id"),
+        "target": {
+            "targetId": target_id,
+            "targetRevision": target_revision,
+            "targetDigest": target_digest,
+            "domainDecisionRef": coding_domain_decision_ref(target_digest),
+            "implementer": {
+                "subject": implementer.subject,
+                "executionRef": implementer.execution_ref,
+            },
+            "reviewer": {
+                "subject": reviewer.subject,
+                "executionRef": reviewer.execution_ref,
+            },
+            "reviewerPolicy": {
+                "id": reviewer_policy.policy_id,
+                "revision": reviewer_policy.revision,
+                "digest": reviewer_policy.digest,
+                "independenceClass": reviewer_policy.independence_class,
+            },
+            "executionTargetRef": execution_target_ref,
+        },
+        "reviewAttestation": {
+            "targetId": target_id,
+            "targetRevision": target_revision,
+            "targetDigest": target_digest,
+            "reviewer": {
+                "subject": reviewer.subject,
+                "executionRef": reviewer.execution_ref,
+            },
+            "reviewerPolicy": {
+                "id": reviewer_policy.policy_id,
+                "revision": reviewer_policy.revision,
+                "digest": reviewer_policy.digest,
+                "independenceClass": reviewer_policy.independence_class,
+            },
+        },
+        "personal": {
+            "delegationId": personal.delegation_id,
+            "expectedDelegationVersion": personal.expected_delegation_version,
+            "policyRevisionRef": personal.policy_revision_ref,
+            "profileRevisionRef": personal.profile_revision_ref,
+            "constraintSetRef": personal.constraint_set_ref,
+            "recoveryPolicyRef": personal.recovery_policy_ref,
+        },
+        "commitMaterial": {
+            "callerIdentity": material.caller_identity,
+            "issuedAt": material.issued_at,
+            "resolvedTarget": dict(material.resolved_target),
+            "executionInput": dict(material.execution_input),
+            "constraintReceiptRefs": list(material.constraint_receipt_refs),
+            "resolutionReason": material.resolution_reason,
+        },
+    }
+    if deep_link is not None:
+        request["deepLink"] = _nonblank(deep_link, "deepLink")
+    return request
 
 
 def to_delegation_commit(
@@ -626,6 +729,10 @@ class PersonalRuntimeAdmissionSocketPort:
         status, value = parsed
         if status == 200:
             if not isinstance(value, Mapping):
+                return AdmissionTransportOutcome("OUTCOME_UNKNOWN")
+            try:
+                _parse_admission_receipt(value, command)
+            except ContractError:
                 return AdmissionTransportOutcome("OUTCOME_UNKNOWN")
             return value
         if status == 401:

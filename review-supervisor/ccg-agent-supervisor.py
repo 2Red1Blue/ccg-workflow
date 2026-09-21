@@ -27,6 +27,7 @@ import threading
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -737,6 +738,372 @@ def collect_input_files(paths: list[str], label: str) -> tuple[bytes, dict[str, 
     return (b"".join(chunks) if has_content else b""), {"kind": "files", "paths": sources}
 
 
+CODING_ADMISSION_LEAF_PREFIX = "ccg:leaf-terminal:"
+
+
+def _exact_config_keys(
+    value: Mapping[str, Any],
+    required: set[str],
+    label: str,
+    *,
+    optional: set[str] | None = None,
+) -> None:
+    """Reject missing and unknown fields in the local admission config."""
+
+    allowed = required | (optional or set())
+    keys = set(value)
+    if not required.issubset(keys) or not keys.issubset(allowed):
+        raise ValueError(f"coding admission config {label} fields are invalid")
+
+
+def parse_coding_admission_config(raw: bytes) -> dict[str, Any]:
+    """Parse the optional stateless CCG/Personal Runtime admission context.
+
+    The caller reads the file exactly once and passes that same buffer, so the
+    recorded ``coding_admission_config_sha256`` always describes the config the
+    admission actually consumed.  A config cannot disable itself: an in-file
+    ``enabled`` flag is rejected so admission is only ever skipped through the
+    explicit ``--disable-coding-admission`` command-line switch.
+    """
+
+    try:
+        value = json.loads(raw)
+    except (UnicodeError, ValueError) as error:
+        raise ValueError(f"coding admission config is not valid JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise ValueError("coding admission config must be a JSON object")
+    _exact_config_keys(value, {"admission", "request"}, "top-level")
+    admission = value["admission"]
+    request = value["request"]
+    if not isinstance(admission, dict) or not isinstance(request, dict):
+        raise ValueError("coding admission config admission/request must be objects")
+    _exact_config_keys(admission, {"socket", "tokenEnv"}, "admission", optional={"timeoutMs"})
+    for key in ("socket", "tokenEnv"):
+        if not isinstance(admission.get(key), str) or not admission[key].strip():
+            raise ValueError(f"coding admission config requires admission.{key}")
+    required_request = (
+        "targetId",
+        "targetRevision",
+        "reviewerPolicy",
+        "executionTargetRef",
+        "implementerReceipt",
+        "personal",
+        "commitMaterial",
+    )
+    for key in required_request:
+        if key not in request:
+            raise ValueError(f"coding admission config requires request.{key}")
+    # Digests, worker identities, and the attestation are CCG terminal-receipt
+    # products.  Rejecting them in configuration prevents a stale copied request
+    # from masquerading as the current dual-leaf review.
+    forbidden = {
+        "targetDigest",
+        "domainDecisionRef",
+        "implementer",
+        "reviewer",
+        "reviewAttestation",
+        "enabled",
+    }
+    supplied = forbidden.intersection(request)
+    if supplied:
+        raise ValueError(
+            "coding admission config must not supply receipt-bound fields: "
+            + ", ".join(sorted(supplied))
+        )
+    _exact_config_keys(
+        request,
+        set(required_request),
+        "request",
+        optional={"reviewerBackend", "reviewerSubject", "deepLink"},
+    )
+    nested_fields = (
+        (request["reviewerPolicy"], {"id", "revision", "digest", "independenceClass"}, "reviewerPolicy"),
+        (
+            request["personal"],
+            {
+                "delegationId",
+                "expectedDelegationVersion",
+                "policyRevisionRef",
+                "profileRevisionRef",
+                "constraintSetRef",
+                "recoveryPolicyRef",
+            },
+            "personal",
+        ),
+        (
+            request["commitMaterial"],
+            {
+                "callerIdentity",
+                "issuedAt",
+                "resolvedTarget",
+                "executionInput",
+                "constraintReceiptRefs",
+                "resolutionReason",
+            },
+            "commitMaterial",
+        ),
+    )
+    for nested, fields, label in nested_fields:
+        if not isinstance(nested, Mapping):
+            raise ValueError(f"coding admission config request.{label} must be an object")
+        _exact_config_keys(nested, fields, f"request.{label}")
+    _implementer_receipt(request["implementerReceipt"])
+    return {"admission": admission, "request": request}
+
+
+def _implementer_receipt(value: Any) -> tuple[str, str, str]:
+    """Validate the CCG-owned real implementer receipt carried in the config."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("coding admission implementerReceipt must be an object")
+    _exact_config_keys(value, {"subject", "executionRef", "receiptDigest"}, "request.implementerReceipt")
+    subject = value.get("subject")
+    execution_ref = value.get("executionRef")
+    receipt_digest = value.get("receiptDigest")
+    for label, item in (("subject", subject), ("executionRef", execution_ref)):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"coding admission implementerReceipt requires {label}")
+    if not isinstance(receipt_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", receipt_digest) is None:
+        raise ValueError("coding admission implementerReceipt requires a sha256 receiptDigest")
+    return subject, execution_ref, receipt_digest
+
+
+def _leaf_execution_ref(result: Mapping[str, Any], run_id: str, backend: str) -> tuple[str, str]:
+    """Bind a leaf identity to the run that actually produced its receipt.
+
+    A retried leaf keeps the identity of the source run whose receipt it reuses,
+    so a retry resubmits the same immutable decision and command ID instead of
+    minting a new identity from the retry's fresh run ID.
+    """
+
+    report = result.get("report")
+    if not isinstance(report, Mapping):
+        raise ValueError(f"{backend} terminal receipt has no report metadata")
+    digest = report.get("sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError(f"{backend} terminal receipt has an invalid report digest")
+    source_run = result.get("reused_from_run")
+    origin = source_run if isinstance(source_run, str) and source_run else run_id
+    return f"{CODING_ADMISSION_LEAF_PREFIX}{origin}:{backend}:{digest}", f"sha256:{digest}"
+
+
+def execute_review_coding_admission(
+    config: Mapping[str, Any],
+    run_id: str,
+    backend_results: Mapping[str, Mapping[str, Any]],
+    *,
+    previous_admission: Mapping[str, Any] | None = None,
+    retry_run: str | None = None,
+) -> dict[str, Any]:
+    """Submit an approved dual-leaf review to Personal Runtime, if eligible.
+
+    The configuration contributes only stable CCG/PR context and the real
+    implementer receipt.  The reviewer identity and attestation are built from
+    the current review-leaf terminal receipt, so the supervisor never fabricates
+    an implementer out of a review leaf.  Only ``execute_coding_admission`` runs;
+    no PR or Fabric state is retained here.
+    """
+
+    admission = config["admission"]
+    request_config = config["request"]
+    reviewer_backend = request_config.get("reviewerBackend", "claude")
+    if reviewer_backend not in ("codex", "claude"):
+        raise ValueError("coding admission reviewerBackend must name one review leaf")
+    leaves = ("codex", "claude")
+    if any(
+        backend_results.get(name, {}).get("state") != "succeeded"
+        for name in leaves
+    ):
+        return {"state": "not_attempted", "reason": "leaf_terminal_failure"}
+    if any(
+        backend_results.get(name, {}).get("verdict") != "APPROVE"
+        for name in leaves
+    ):
+        return {"state": "not_attempted", "reason": "review_not_approved"}
+
+    from ccg_coding_domain import (
+        ContractError,
+        PersonalAdmissionContext,
+        PersonalRuntimeAdmissionSocketPort,
+        PersonalRuntimeCommitMaterial,
+        ReviewerPolicy,
+        WorkerRef,
+        build_coding_admission_request,
+        coding_admission_command_id,
+        coding_domain_decision_ref,
+        coding_target_digest,
+        execute_coding_admission,
+    )
+
+    implementer_subject, implementer_execution, implementer_digest = _implementer_receipt(
+        request_config["implementerReceipt"]
+    )
+    reviewer_subject = request_config.get("reviewerSubject", f"ccg:{reviewer_backend}:reviewer")
+    if not isinstance(reviewer_subject, str) or not reviewer_subject.strip():
+        raise ValueError("coding admission reviewerSubject must be a non-blank string")
+    other_backend = "codex" if reviewer_backend == "claude" else "claude"
+    reviewer_execution, reviewer_digest = _leaf_execution_ref(
+        backend_results[reviewer_backend], run_id, reviewer_backend
+    )
+    other_execution, other_digest = _leaf_execution_ref(
+        backend_results[other_backend], run_id, other_backend
+    )
+    # A review leaf produced a review, not the change under review.  Reject any
+    # implementer receipt that reuses a review-leaf namespace, subject, or
+    # execution/digest identity instead of a genuine implementer receipt.
+    if implementer_execution.startswith(CODING_ADMISSION_LEAF_PREFIX):
+        raise ValueError(
+            "coding admission implementer receipt must not reuse a review-leaf execution identity"
+        )
+    review_subjects = {reviewer_subject, "ccg:codex:reviewer", "ccg:claude:reviewer"}
+    if (
+        implementer_subject in review_subjects
+        or implementer_execution in (reviewer_execution, other_execution)
+        or implementer_digest in (reviewer_digest, other_digest)
+    ):
+        raise ValueError(
+            "coding admission implementer identity must be independent from both review leaves"
+        )
+    implementer = WorkerRef(implementer_subject, implementer_execution)
+    reviewer = WorkerRef(reviewer_subject, reviewer_execution)
+    reviewer_policy_value = request_config["reviewerPolicy"]
+    if not isinstance(reviewer_policy_value, Mapping):
+        raise ValueError("coding admission reviewerPolicy must be an object")
+    reviewer_policy = ReviewerPolicy(
+        reviewer_policy_value.get("id"),
+        reviewer_policy_value.get("revision"),
+        reviewer_policy_value.get("digest"),
+        reviewer_policy_value.get("independenceClass"),
+    )
+    personal_value = request_config["personal"]
+    material_value = request_config["commitMaterial"]
+    if not isinstance(personal_value, Mapping) or not isinstance(material_value, Mapping):
+        raise ValueError("coding admission personal/commitMaterial must be objects")
+    refs = material_value.get("constraintReceiptRefs", [])
+    if not isinstance(refs, list):
+        raise ValueError("coding admission constraintReceiptRefs must be an array")
+    personal = PersonalAdmissionContext(
+        personal_value.get("delegationId"),
+        personal_value.get("expectedDelegationVersion"),
+        personal_value.get("policyRevisionRef"),
+        personal_value.get("profileRevisionRef"),
+        personal_value.get("constraintSetRef"),
+        personal_value.get("recoveryPolicyRef"),
+    )
+    material = PersonalRuntimeCommitMaterial(
+        material_value.get("callerIdentity"),
+        material_value.get("issuedAt"),
+        material_value.get("resolvedTarget"),
+        material_value.get("executionInput"),
+        tuple(refs),
+        material_value.get("resolutionReason"),
+    )
+    target_id = request_config.get("targetId")
+    target_revision = request_config.get("targetRevision")
+    execution_target_ref = request_config.get("executionTargetRef")
+    target_digest = coding_target_digest(
+        target_id,
+        target_revision,
+        implementer,
+        reviewer,
+        reviewer_policy,
+        execution_target_ref,
+    )
+    # The command ID is the immutable decision's own identity.  A retry that
+    # reuses the same receipts therefore resubmits the same command instead of
+    # inventing a new one from the retry's run ID.
+    request_id = coding_admission_command_id(target_digest)
+    if (
+        isinstance(previous_admission, Mapping)
+        and previous_admission.get("state") in ("recorded", "outcome_unknown")
+        and previous_admission.get("target_digest") == target_digest
+    ):
+        carried = {
+            key: previous_admission[key]
+            for key in (
+                "state",
+                "request_id",
+                "command_id",
+                "target_id",
+                "target_revision",
+                "target_digest",
+                "domain_decision_ref",
+                "implementer",
+                "reviewer",
+                "result",
+            )
+            if key in previous_admission
+        }
+        carried["carried_from_run"] = retry_run
+        return carried
+    request = build_coding_admission_request(
+        request_id=request_id,
+        target_id=target_id,
+        target_revision=target_revision,
+        implementer=implementer,
+        reviewer=reviewer,
+        reviewer_policy=reviewer_policy,
+        execution_target_ref=execution_target_ref,
+        personal=personal,
+        material=material,
+        deep_link=request_config.get("deepLink"),
+    )
+    token_env = admission["tokenEnv"]
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env) is None:
+        raise ValueError("coding admission tokenEnv must name one environment variable")
+    token = os.environ.get(token_env)
+    if token is None:
+        raise ValueError(f"coding admission token environment variable {token_env} is missing")
+    timeout_ms = admission.get("timeoutMs", 10_000)
+    if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms <= 0:
+        raise ValueError("coding admission timeoutMs must be a positive integer")
+    result_base = {
+        "request_id": request_id,
+        "command_id": request_id,
+        "target_id": target_id,
+        "target_revision": target_revision,
+        "target_digest": target_digest,
+        "domain_decision_ref": coding_domain_decision_ref(target_digest),
+        "implementer": request["target"]["implementer"],
+        "reviewer": request["target"]["reviewer"],
+    }
+    port = PersonalRuntimeAdmissionSocketPort(
+        admission["socket"],
+        token,
+        material.caller_identity,
+        timeout_ms=timeout_ms,
+    )
+    try:
+        result = execute_coding_admission(port, request)
+    except ContractError as error:
+        # A definite local/PR contract rejection: no transport ambiguity and no
+        # durable receipt, so it stays distinct from an unknown outcome.
+        return {**result_base, "state": "rejected", "error": str(error)}
+    result_status = result.get("status")
+    if result_status == "RECORDED":
+        state = "recorded"
+    elif result_status == "OUTCOME_UNKNOWN":
+        state = "outcome_unknown"
+    elif result_status == "UNAVAILABLE":
+        state = "unavailable"
+    else:
+        state = "rejected"
+    return {**result_base, "state": state, "result": result}
+
+
+def previous_coding_admission(root: Path, run_id: str | None) -> dict[str, Any] | None:
+    """Read a retry source's recorded admission outcome, if any."""
+
+    if not run_id:
+        return None
+    source = run_path(root, run_id)
+    if not source.is_dir():
+        return None
+    previous = read_json(source / "status.json") or {}
+    value = previous.get("coding_admission")
+    return value if isinstance(value, dict) else None
+
+
 def analysis_task_identity(raw_path: str | None, workdir: Path) -> dict[str, Any] | None:
     """Use the router's read-only authority; never copy mutable task state."""
     if raw_path is None:
@@ -966,6 +1333,15 @@ def reuse_leaf_results(root: Path, run_id: str | None, metadata: dict, directory
     try:
         previous = read_json(source / "status.json") or {}
         keys = ["mode", "request_sha256", f"{contract.input_key}_sha256", "workdir", contract.policy_key]
+        if contract == REVIEW_CONTRACT:
+            current_has_admission = "coding_admission_config_sha256" in metadata
+            previous_has_admission = "coding_admission_config_sha256" in previous
+            if current_has_admission != previous_has_admission:
+                raise ValueError(
+                    "retry input/policy mismatch: coding admission configuration presence changed"
+                )
+            if current_has_admission:
+                keys.append("coding_admission_config_sha256")
         if contract == ANALYSIS_CONTRACT:
             keys.insert(1, "task")
         for key in keys:
@@ -1052,6 +1428,7 @@ def dual_leaf_command(args: argparse.Namespace, contract: LeafContract) -> int:
     write_json_atomic(running_path, metadata)
     bundle = directory / "bundle"
     backends: list[LeafBackend] = []
+    admission_config: dict[str, Any] | None = None
     termination_signal: int | None = None
     timed_out_names: set[str] = set()
     cancelled_names: set[str] = set()
@@ -1108,6 +1485,23 @@ def dual_leaf_command(args: argparse.Namespace, contract: LeafContract) -> int:
                                   "supervisor_sha256": sha256_path(Path(__file__))},
             }
         )
+        if (
+            contract == REVIEW_CONTRACT
+            and args.coding_admission_config is not None
+            and not args.disable_coding_admission
+        ):
+            # Read the config exactly once.  The recorded digest and the parsed
+            # context therefore always describe the same bytes, and a malformed
+            # or self-disabling config fails the run instead of being ignored.
+            if not args.coding_admission_config.strip():
+                raise ValueError("coding admission config path must be non-blank")
+            admission_raw = read_regular_file_bounded(
+                Path(args.coding_admission_config).expanduser().resolve(),
+                REQUEST_LIMIT,
+                "coding admission config",
+            )
+            metadata["coding_admission_config_sha256"] = sha256_bytes(admission_raw)
+            admission_config = parse_coding_admission_config(admission_raw)
         if contract == ANALYSIS_CONTRACT and metadata["task"] is not None:
             metadata[contract.policy_key]["task_router_sha256"] = sha256_path(Path(__file__).with_name("ccg_task_router.py"))
         if args.retry_run:
@@ -1292,9 +1686,49 @@ def dual_leaf_command(args: argparse.Namespace, contract: LeafContract) -> int:
                 },
             }
         metadata["backends"] = backend_results
+        admission_failure: str | None = None
+        admission_recorded = False
+        if admission_config is not None:
+            if termination_signal is not None:
+                # Cancellation observed before admission starts writes no
+                # request. A signal after this guard is classified by the
+                # admission transport or by the durable receipt it returns.
+                metadata["coding_admission"] = {"state": "not_attempted", "reason": "cancelled"}
+            else:
+                try:
+                    metadata["coding_admission"] = execute_review_coding_admission(
+                        admission_config,
+                        run_id,
+                        backend_results,
+                        previous_admission=previous_coding_admission(root, args.retry_run),
+                        retry_run=args.retry_run,
+                    )
+                except Exception as error:
+                    metadata["coding_admission"] = {
+                        "state": "rejected",
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                admission_state = metadata["coding_admission"].get("state")
+                if admission_state == "recorded":
+                    admission_recorded = True
+                elif admission_state in ("outcome_unknown", "unavailable", "rejected"):
+                    admission_failure = (
+                        "Personal Runtime admission did not produce a RECORDED receipt "
+                        f"({admission_state})"
+                    )
+                    error = metadata["coding_admission"].get("error")
+                    if error:
+                        admission_failure += f": {error}"
         backend_states = {value["state"] for value in backend_results.values()}
         terminalizing = True
-        if termination_signal is not None:
+        if admission_recorded:
+            # A durable receipt is the authoritative admission outcome; a later
+            # cancel cannot un-record it.
+            state, exit_code = "succeeded", 0
+        elif admission_failure is not None:
+            terminal_error = f"coding admission failed: {admission_failure}"
+            state, exit_code = "failed", 1
+        elif termination_signal is not None:
             state, exit_code = "cancelled", 128 + termination_signal
         elif backend_states == {"succeeded"} and len(backend_results) == 2:
             state, exit_code = "succeeded", 0
@@ -1592,6 +2026,16 @@ def parse_args() -> argparse.Namespace:
     review.add_argument("--base")
     review.add_argument("--snapshot-base", help="one baseline-to-current snapshot, including staged and unstaged changes")
     review.add_argument("--include-untracked", action="store_true", help="include non-ignored new files in --snapshot-base")
+    review.add_argument(
+        "--coding-admission-config",
+        default=os.environ.get("CCG_CODING_ADMISSION_CONFIG"),
+        help="optional stateless CCG/Personal Runtime context; admission runs only after dual APPROVE",
+    )
+    review.add_argument(
+        "--disable-coding-admission",
+        action="store_true",
+        help="keep the legacy review-only behavior even when an admission config is present",
+    )
     analyze = subparsers.add_parser("analyze", help="run isolated Codex + Claude analysis; request arrives on stdin")
     analyze.add_argument("--workdir", required=True)
     analyze.add_argument("--context-file", action="append", required=True, help="explicit regular context file; repeat for multiple files")

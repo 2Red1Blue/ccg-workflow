@@ -128,6 +128,28 @@ class CodingDomainTest(unittest.TestCase):
             command["payload"]["decision"]["targetDigest"],
         )
 
+    def test_admission_command_id_is_bound_to_the_decision_digest(self):
+        decision = target()
+        command_id = DOMAIN.coding_admission_command_id(decision.target_digest)
+        self.assertEqual(
+            "ccg:admission:" + decision.target_digest.removeprefix("sha256:"),
+            command_id,
+        )
+        # A retry of the same immutable decision resubmits the same command ID,
+        # while any changed worker/policy/execution target yields a fresh one.
+        self.assertEqual(command_id, DOMAIN.coding_admission_command_id(decision.target_digest))
+        other_digest = DOMAIN.coding_target_digest(
+            "coding:target-17",
+            "r7",
+            DOMAIN.WorkerRef("ccg-implementer", "run:implement-2"),
+            decision.reviewer,
+            decision.reviewer_policy,
+            decision.execution_target_ref,
+        )
+        self.assertNotEqual(command_id, DOMAIN.coding_admission_command_id(other_digest))
+        with self.assertRaises(DOMAIN.ContractError):
+            DOMAIN.coding_admission_command_id("not-a-digest")
+
     def test_ccg_rechecks_completed_reviewer_under_the_frozen_policy(self):
         decision = target()
         DOMAIN.validate_review_independence(
