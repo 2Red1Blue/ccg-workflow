@@ -510,6 +510,52 @@ async function installSkillGeneratedCommands(ctx: InstallContext): Promise<void>
   }
 }
 
+/** Create shared user files exclusively; a marker never grants overwrite ownership. */
+export async function writeCodexUserFileIfMissing(path: string, content: string): Promise<void> {
+  try {
+    await fs.writeFile(path, content, { encoding: 'utf-8', flag: 'wx' })
+  }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+}
+
+/** Remove only known CCG registrations, preserving other hooks and group metadata. */
+export function removeCodexWorkflowHook(settings: Record<string, any>, codexHome: string): boolean {
+  const hookPath = join(codexHome, 'hooks', 'ccg-workflow.py')
+  const commands = new Set([
+    `python3 ${hookPath}`, `python3 "${hookPath}"`, `python3 '${hookPath}'`,
+    'python3 ~/.codex/hooks/ccg-workflow.py',
+  ])
+  let changed = false
+  for (const [event, groups] of Object.entries(settings?.hooks || {})) {
+    if (!Array.isArray(groups)) continue
+    settings.hooks[event] = groups.flatMap((group: any) => {
+      if (!Array.isArray(group?.hooks)) return [group]
+      const hooks = group.hooks.filter((hook: any) => !commands.has(hook?.command))
+      if (hooks.length === group.hooks.length) return [group]
+      changed = true
+      return hooks.length ? [{ ...group, hooks }] : []
+    })
+  }
+  return changed
+}
+
+/** Matches one CCG-managed AGENTS.md block, including its explicit end marker. */
+const CCG_MANAGED_BLOCK = /<!-- CCG:START[\s\S]*?<!-- CCG:END\s*-->/g
+
+/**
+ * Strip every CCG-managed AGENTS.md block, leaving only user-authored text.
+ *
+ * The block declares itself CCG-owned ("Do not edit this block manually"), so an
+ * uninstall is allowed to drop it. Text outside the markers is never touched, and
+ * an unterminated `CCG:START` (no end marker) matches nothing, so it survives
+ * verbatim instead of being deleted on a guess.
+ */
+export function stripCcgManagedBlock(content: string): string {
+  return content.replace(CCG_MANAGED_BLOCK, '')
+}
+
 /**
  * Install Codex-mode files: AGENTS.md + .codex/config.toml + .codex/agents/*.toml
  * These enable Codex CLI as an alternative lead orchestrator (Codex-led multi-model mode).
@@ -561,7 +607,7 @@ export async function installCodexMode(): Promise<{ success: boolean, message: s
       let content = await fs.readFile(agentsMdSrc, 'utf-8')
       content = injectConfigVariables(content, injectOpts)
       content = replaceHomePathsInTemplate(content, join(homedir(), '.claude'))
-      await fs.writeFile(join(codexHome, 'AGENTS.md'), content, 'utf-8')
+      await writeCodexUserFileIfMissing(join(codexHome, 'AGENTS.md'), content)
     }
 
     // hooks/ — inject template variables into ccg-workflow.py so the guidance
@@ -592,7 +638,7 @@ export async function installCodexMode(): Promise<{ success: boolean, message: s
       let content = await fs.readFile(hooksJsonSrc, 'utf-8')
       const absHome = homedir().replace(/\\/g, '/')
       content = content.replace(/~\//g, `${absHome}/`)
-      await fs.writeFile(join(codexHome, 'hooks.json'), content, 'utf-8')
+      await writeCodexUserFileIfMissing(join(codexHome, 'hooks.json'), content)
     }
 
     // Write version marker so external tools can check which CCG version installed Codex mode
@@ -600,7 +646,7 @@ export async function installCodexMode(): Promise<{ success: boolean, message: s
 
     return {
       success: true,
-      message: `Codex mode installed:\n  ~/.codex/AGENTS.md\n  ~/.codex/config.toml\n  ~/.codex/hooks.json\n  ~/.codex/hooks/ccg-workflow.py\n  ~/.codex/agents/ccg-implement.toml\n  ~/.codex/agents/ccg-review.toml\n  ~/.codex/agents/ccg-research.toml\n  ~/.codex/.ccg-version (${packageVersion})`,
+      message: `Codex mode installed (existing AGENTS.md and hooks.json preserved):\n  ~/.codex/AGENTS.md\n  ~/.codex/config.toml\n  ~/.codex/hooks.json\n  ~/.codex/hooks/ccg-workflow.py\n  ~/.codex/agents/ccg-implement.toml\n  ~/.codex/agents/ccg-review.toml\n  ~/.codex/agents/ccg-research.toml\n  ~/.codex/.ccg-version (${packageVersion})`,
     }
   }
   catch (error) {
@@ -622,14 +668,24 @@ export async function uninstallCodexMode(): Promise<{ success: boolean, removed:
     join(codexHome, 'agents', 'ccg-review.toml'),
     join(codexHome, 'agents', 'ccg-research.toml'),
     join(codexHome, 'hooks', 'ccg-workflow.py'),
-    join(codexHome, 'hooks.json'),
     join(codexHome, '.ccg-version'),
   ]
 
-  // AGENTS.md — only remove if it contains CCG marker
+  // Shared personalization belongs to the user, even with legacy CCG markers.
+  // CCG reclaims only its own marked block — see the ownership split below.
   const agentsMd = join(codexHome, 'AGENTS.md')
 
   try {
+    // Validate shared configuration before removing any runtime files.
+    const hooksPath = join(codexHome, 'hooks.json')
+    if (await fs.pathExists(hooksPath)) {
+      const settings = await fs.readJson(hooksPath)
+      if (removeCodexWorkflowHook(settings, codexHome)) {
+        await fs.writeJson(hooksPath, settings, { spaces: 2 })
+        removed.push('~/.codex/hooks.json [CCG workflow registration]')
+      }
+    }
+
     for (const file of ccgFiles) {
       if (await fs.pathExists(file)) {
         await fs.remove(file)
@@ -638,13 +694,22 @@ export async function uninstallCodexMode(): Promise<{ success: boolean, removed:
     }
 
     if (await fs.pathExists(agentsMd)) {
-      const content = await fs.readFile(agentsMd, 'utf-8')
-      if (content.includes('<!-- CCG:START')) {
+      // Drop CCG's own block; keep whatever the user wrote around it. A file that
+      // is nothing but the managed block is CCG-owned, so it goes away entirely —
+      // leaving it behind would keep instructing Codex to act as the CCG lead
+      // orchestrator after uninstall, referencing deleted agents and hooks.
+      const original = await fs.readFile(agentsMd, 'utf-8')
+      const personal = stripCcgManagedBlock(original)
+      if (personal.trim() === '') {
         await fs.remove(agentsMd)
-        removed.push('~/.codex/AGENTS.md')
+        removed.push('~/.codex/AGENTS.md [CCG-managed block]')
+      }
+      else if (personal !== original) {
+        await fs.writeFile(agentsMd, personal, 'utf-8')
+        removed.push('~/.codex/AGENTS.md [CCG-managed block], personal text preserved')
       }
       else {
-        skipped.push('~/.codex/AGENTS.md (not managed by CCG)')
+        skipped.push('~/.codex/AGENTS.md (personal instructions preserved)')
       }
     }
 
@@ -701,7 +766,7 @@ async function _installCodexFilesInternal(ctx: InstallContext): Promise<void> {
     // AGENTS.md → ~/.codex/AGENTS.md (global fallback)
     const agentsMdSrc = join(codexTemplateDir, 'AGENTS.md')
     if (await fs.pathExists(agentsMdSrc)) {
-      await fs.copy(agentsMdSrc, join(codexHome, 'AGENTS.md'), { overwrite: true })
+      await writeCodexUserFileIfMissing(join(codexHome, 'AGENTS.md'), await fs.readFile(agentsMdSrc, 'utf-8'))
     }
   }
   catch (error) {
