@@ -520,13 +520,48 @@ export async function writeCodexUserFileIfMissing(path: string, content: string)
   }
 }
 
-/** Remove only known CCG registrations, preserving other hooks and group metadata. */
-export function removeCodexWorkflowHook(settings: Record<string, any>, codexHome: string): boolean {
+/** Every command spelling CCG may have written for its Codex workflow hook. */
+function codexWorkflowCommands(codexHome: string): Set<string> {
   const hookPath = join(codexHome, 'hooks', 'ccg-workflow.py')
-  const commands = new Set([
+  return new Set([
     `python3 ${hookPath}`, `python3 "${hookPath}"`, `python3 '${hookPath}'`,
     'python3 ~/.codex/hooks/ccg-workflow.py',
   ])
+}
+
+/** The command CCG registers for the Codex workflow hook. */
+export function codexWorkflowHookCommand(codexHome: string): string {
+  return `python3 ${join(codexHome, 'hooks', 'ccg-workflow.py')}`
+}
+
+/** Returns whether settings already register CCG's Codex workflow hook. */
+export function hasCodexWorkflowHook(settings: Record<string, any>, codexHome: string): boolean {
+  const commands = codexWorkflowCommands(codexHome)
+  for (const groups of Object.values(settings?.hooks || {})) {
+    if (!Array.isArray(groups)) continue
+    for (const group of groups) {
+      if (!Array.isArray(group?.hooks)) continue
+      if (group.hooks.some((hook: any) => commands.has(hook?.command))) return true
+    }
+  }
+  return false
+}
+
+/** Returns whether the shared hooks.json positively registers CCG's workflow hook. */
+async function isCodexWorkflowHookRegistered(hooksPath: string, codexHome: string): Promise<boolean> {
+  try {
+    if (!(await fs.pathExists(hooksPath))) return false
+    return hasCodexWorkflowHook(await fs.readJson(hooksPath), codexHome)
+  }
+  catch {
+    // An unreadable shared file cannot register our hook; Codex rejects it too.
+    return false
+  }
+}
+
+/** Remove only known CCG registrations, preserving other hooks and group metadata. */
+export function removeCodexWorkflowHook(settings: Record<string, any>, codexHome: string): boolean {
+  const commands = codexWorkflowCommands(codexHome)
   let changed = false
   for (const [event, groups] of Object.entries(settings?.hooks || {})) {
     if (!Array.isArray(groups)) continue
@@ -600,6 +635,8 @@ export async function installCodexMode(): Promise<{ success: boolean, message: s
       await fs.copy(agentsSrc, join(codexHome, 'agents'), { overwrite: true })
     }
 
+    const agentsMdPath = join(codexHome, 'AGENTS.md')
+    let agentsMdPreserved = false
     const agentsMdSrc = join(codexTemplateDir, 'AGENTS.md')
     if (await fs.pathExists(agentsMdSrc)) {
       // Always inject — injectConfigVariables falls back to sane defaults
@@ -607,7 +644,8 @@ export async function installCodexMode(): Promise<{ success: boolean, message: s
       let content = await fs.readFile(agentsMdSrc, 'utf-8')
       content = injectConfigVariables(content, injectOpts)
       content = replaceHomePathsInTemplate(content, join(homedir(), '.claude'))
-      await writeCodexUserFileIfMissing(join(codexHome, 'AGENTS.md'), content)
+      agentsMdPreserved = await fs.pathExists(agentsMdPath)
+      await writeCodexUserFileIfMissing(agentsMdPath, content)
     }
 
     // hooks/ — inject template variables into ccg-workflow.py so the guidance
@@ -634,19 +672,32 @@ export async function installCodexMode(): Promise<{ success: boolean, message: s
     // Codex does not reliably expand `~` when spawning the hook command, so a
     // relative/tilde path made it look for `.codex/hooks/` in the project dir.
     const hooksJsonSrc = join(codexTemplateDir, 'hooks.json')
+    const hooksPath = join(codexHome, 'hooks.json')
     if (await fs.pathExists(hooksJsonSrc)) {
       let content = await fs.readFile(hooksJsonSrc, 'utf-8')
       const absHome = homedir().replace(/\\/g, '/')
       content = content.replace(/~\//g, `${absHome}/`)
-      await writeCodexUserFileIfMissing(join(codexHome, 'hooks.json'), content)
+      await writeCodexUserFileIfMissing(hooksPath, content)
     }
+
+    // Existing shared files are never rewritten, so a user who already had them keeps
+    // Codex mode inert: the guidance hook never runs and the CCG instructions are
+    // never installed. Say so instead of reporting a bare success.
+    const warnings: string[] = []
+    if (agentsMdPreserved) {
+      warnings.push('~/.codex/AGENTS.md already existed, so the CCG instructions were NOT added. Append the block from templates/codex/AGENTS.md to have Codex follow the CCG workflow.')
+    }
+    if (!(await isCodexWorkflowHookRegistered(hooksPath, codexHome))) {
+      warnings.push(`~/.codex/hooks.json does not register the CCG workflow hook, so Codex mode guidance will NOT run. Add this under hooks.UserPromptSubmit to enable it:\n    { "type": "command", "command": "${codexWorkflowHookCommand(codexHome)}", "timeout": 10 }`)
+    }
+    const warning = warnings.length === 0 ? '' : `\n\nWARNING:\n  ${warnings.join('\n  ')}`
 
     // Write version marker so external tools can check which CCG version installed Codex mode
     await fs.writeFile(join(codexHome, '.ccg-version'), packageVersion, 'utf-8')
 
     return {
       success: true,
-      message: `Codex mode installed (existing AGENTS.md and hooks.json preserved):\n  ~/.codex/AGENTS.md\n  ~/.codex/config.toml\n  ~/.codex/hooks.json\n  ~/.codex/hooks/ccg-workflow.py\n  ~/.codex/agents/ccg-implement.toml\n  ~/.codex/agents/ccg-review.toml\n  ~/.codex/agents/ccg-research.toml\n  ~/.codex/.ccg-version (${packageVersion})`,
+      message: `Codex mode installed (existing AGENTS.md and hooks.json preserved):\n  ~/.codex/AGENTS.md\n  ~/.codex/config.toml\n  ~/.codex/hooks.json\n  ~/.codex/hooks/ccg-workflow.py\n  ~/.codex/agents/ccg-implement.toml\n  ~/.codex/agents/ccg-review.toml\n  ~/.codex/agents/ccg-research.toml\n  ~/.codex/.ccg-version (${packageVersion})${warning}`,
     }
   }
   catch (error) {

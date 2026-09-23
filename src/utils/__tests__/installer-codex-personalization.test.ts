@@ -2,7 +2,7 @@ import { homedir, tmpdir } from 'node:os'
 import fs from 'fs-extra'
 import { join } from 'pathe'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { installCodexMode, removeCodexWorkflowHook, stripCcgManagedBlock, uninstallCodexMode, writeCodexUserFileIfMissing } from '../installer'
+import { codexWorkflowHookCommand, hasCodexWorkflowHook, installCodexMode, removeCodexWorkflowHook, stripCcgManagedBlock, uninstallCodexMode, writeCodexUserFileIfMissing } from '../installer'
 
 vi.mock('node:os', async (original) => ({
   ...await original<typeof import('node:os')>(), homedir: vi.fn(),
@@ -175,5 +175,62 @@ describe('Codex personalization ownership', () => {
 
     const reversed = 'a<!-- CCG:END -->b<!-- CCG:START -->c'
     expect(stripCcgManagedBlock(reversed)).toBe(reversed)
+  })
+
+  it('reports a clean install without a hook warning', async () => {
+    const result = await installCodexMode()
+
+    expect(result.success).toBe(true)
+    expect(result.message).not.toContain('WARNING')
+    expect(hasCodexWorkflowHook(await fs.readJson(join(home, 'hooks.json')), home)).toBe(true)
+  })
+
+  it('warns when an existing hooks.json leaves Codex mode inert, without rewriting it', async () => {
+    const userHooks = { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'my-own-hook' }] }] } }
+    await fs.writeJson(join(home, 'hooks.json'), userHooks)
+
+    const result = await installCodexMode()
+
+    // Install still reports success, but must not pretend the hook is registered.
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('WARNING')
+    expect(result.message).toContain('Codex mode guidance will NOT run')
+    expect(result.message).toContain(codexWorkflowHookCommand(home))
+    // The user's file stays byte-identical — the warning is the remedy, not a rewrite.
+    expect(await fs.readJson(join(home, 'hooks.json'))).toEqual(userHooks)
+  })
+
+  it('detects every command spelling CCG may have written', () => {
+    const command = codexWorkflowHookCommand(home)
+    const wrap = (c: string) => ({ hooks: { UserPromptSubmit: [{ hooks: [{ command: c }] }] } })
+
+    expect(hasCodexWorkflowHook(wrap(command), home)).toBe(true)
+    expect(hasCodexWorkflowHook(wrap(`python3 "${command.slice('python3 '.length)}"`), home)).toBe(true)
+    expect(hasCodexWorkflowHook(wrap('python3 ~/.codex/hooks/ccg-workflow.py'), home)).toBe(true)
+    expect(hasCodexWorkflowHook(wrap('python3 /other/ccg-workflow.py'), home)).toBe(false)
+    expect(hasCodexWorkflowHook({}, home)).toBe(false)
+    expect(hasCodexWorkflowHook({ hooks: null }, home)).toBe(false)
+    expect(hasCodexWorkflowHook({ hooks: { Stop: [{ hooks: [{}] }] } }, home)).toBe(false)
+  })
+
+  it('warns when an existing AGENTS.md keeps the CCG instructions out', async () => {
+    const personal = '# my own agents file\n'
+    await fs.writeFile(join(home, 'AGENTS.md'), personal)
+
+    const result = await installCodexMode()
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('AGENTS.md already existed')
+    expect(await fs.readFile(join(home, 'AGENTS.md'), 'utf8')).toBe(personal)
+  })
+
+  it('names both shared files when each one blocks part of the install', async () => {
+    await fs.writeFile(join(home, 'AGENTS.md'), '# mine\n')
+    await fs.writeJson(join(home, 'hooks.json'), { hooks: {} })
+
+    const result = await installCodexMode()
+
+    expect(result.message).toContain('AGENTS.md already existed')
+    expect(result.message).toContain('hooks.json does not register')
   })
 })
