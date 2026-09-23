@@ -1172,23 +1172,48 @@ export function mergeCcgHooks(settings: Record<string, any>, hooksDir: string): 
   return { ...settings, hooks }
 }
 
-async function registerHooksInSettings(ctx: InstallContext): Promise<void> {
-  const settingsPath = join(ctx.installDir, 'settings.json')
-  const hooksDir = join(ctx.installDir, 'hooks', 'ccg')
-
-  try {
-    let settings: Record<string, unknown> = {}
-    if (await fs.pathExists(settingsPath)) {
-      try {
-        settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'))
-      }
-      catch {
-        settings = {}
-      }
+/**
+ * Merge CCG hooks into an existing settings.json.
+ *
+ * Returns an error description instead of writing when the file exists but cannot
+ * be read or parsed: rewriting it would silently discard every unrelated setting
+ * the user has, which is far worse than skipping hook registration.
+ */
+export async function registerHooksInSettingsFile(
+  settingsPath: string,
+  hooksDir: string,
+): Promise<string | undefined> {
+  let settings: Record<string, unknown> = {}
+  if (await fs.pathExists(settingsPath)) {
+    let raw: string
+    try {
+      raw = await fs.readFile(settingsPath, 'utf-8')
     }
+    catch (error) {
+      return `${settingsPath} could not be read (${error}); it was left unchanged.`
+    }
+    try {
+      settings = JSON.parse(raw)
+    }
+    catch {
+      return `${settingsPath} is not valid JSON; it was left unchanged.`
+    }
+  }
 
-    settings = mergeCcgHooks(settings, hooksDir)
-    await fs.writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+  await fs.writeFile(settingsPath, `${JSON.stringify(mergeCcgHooks(settings, hooksDir), null, 2)}\n`, 'utf-8')
+  return undefined
+}
+
+/** Register CCG hooks in the install dir's settings.json, preserving user settings. */
+export async function registerHooksInSettings(ctx: InstallContext): Promise<void> {
+  try {
+    const failure = await registerHooksInSettingsFile(
+      join(ctx.installDir, 'settings.json'),
+      join(ctx.installDir, 'hooks', 'ccg'),
+    )
+    if (failure !== undefined) {
+      ctx.result.errors.push(`Failed to register hooks: ${failure}`)
+    }
   }
   catch (error) {
     ctx.result.errors.push(`Failed to register hooks in settings.json: ${error}`)
