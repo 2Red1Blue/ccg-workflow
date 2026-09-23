@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: 2Red1Blue/personal-runtime
-          ref: e7756e05e1b5d56b27a918046571b22b2666694f
+          ref: ce73b4fcb0d7f9b7f23284f44f58d06e1cee11f4
           path: .qualification/personal-runtime
 
       - uses: pnpm/action-setup@v4
@@ -80,7 +80,7 @@ jobs:
         run: pnpm run test:review-supervisor
 
       - name: Qualify public Personal Runtime admission
-        run: pnpm run qualify:personal-runtime -- --personal-runtime .qualification/personal-runtime
+        run: pnpm run qualify:personal-runtime --personal-runtime .qualification/personal-runtime
 
       - name: Build
         run: pnpm build
