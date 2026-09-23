@@ -204,6 +204,16 @@ ccg-task write --task-dir '<returned taskDir>' \
   --document requirements --content-file requirements-input.md
 ccg-task update --task-dir '<returned taskDir>' \
   --phase implementation --next-action 'Implement the accepted design'
+ccg-task allocate --scope project --project-root "$PWD" \
+  --task-dir '<returned taskDir>' --allocation-id 'implementation-2026-09-23' \
+  --target-id 'coding:canonical-task-lifecycle' \
+  --implementer-subject 'ccg:implementer' --implementer-execution-ref 'run:implementation-1' \
+  --reviewer-subject 'ccg:reviewer' --reviewer-execution-ref 'run:review-1' \
+  --policy-id 'dual-review' --policy-revision 'v1' \
+  --policy-digest 'sha256:<64 lowercase hex digits>' --independence-class 'separate' \
+  --execution-target-ref 'personal-runtime:resolved-target'
+ccg-task read --scope project --project-root "$PWD" \
+  --task-dir '<returned taskDir>' --revision r1
 ccg-task doctor --scope project --project-root "$PWD"
 ```
 
@@ -221,6 +231,32 @@ retries cannot mislabel partially completed native creation as success. Differen
 different tasks; fuzzy name matching is deliberately not an identity policy.
 Task mutations currently require POSIX flock (macOS/Linux); unsupported hosts
 return `TASK_LOCK_UNSUPPORTED` instead of silently omitting concurrency protection.
+
+Coding target decisions are allocated only by `ccg-task allocate` against the
+returned canonical task directory. A task keeps one `targetId` across its
+decision history and owns its own contiguous `r1`, `r2`, ... sequence under the
+existing root flock; Trellis stores records in
+`task.json` at `meta.ccg.codingTargetDecisions`, and CCG fallback tasks store
+them at `ccg.codingTargetDecisions`. The command accepts an `allocation-id` for
+safe exact retries, derives the digest and decision reference from the supplied
+immutable facts, and returns the original record for an exact replay. Reusing
+an allocation ID with changed facts fails. `read` validates the full history
+and its task-local head before returning it. The head records the last revision,
+digest, and decision reference in the same atomic `task.json` replacement, so a
+missing tail or cleared history is rejected. A task-local
+`.ccg-coding-decision-head.json` sidecar stores only those three head values.
+Allocation publishes the sidecar before replacing `task.json`; reads,
+allocations, and `doctor` require both copies and the complete decision history
+to agree, and report mismatches without repair. `doctor` takes the same root lock,
+so it cannot report the normal interval between sidecar and task.json publication
+as a persistent mismatch. This detects partial history
+edits, including removal of both JSON history fields, but cannot detect an
+external deletion or rollback of both `task.json` and the sidecar. Direct
+revision/digest/reference arguments and reserved decision fields in `--ccg-meta`
+are rejected; no command edits existing decision records.
+
+Run `pnpm run test:task-router` to verify task-local allocation, exact replay,
+concurrent revision assignment and tamper refusal; CI and publish both run this gate.
 
 One task can have multiple analysis/review runs. Use the existing supervisor
 instead of shell fan-out and scanning `/tmp` for `claude.txt`:

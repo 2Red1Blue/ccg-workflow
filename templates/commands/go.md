@@ -150,6 +150,13 @@ mkdir -p .ccg/tasks/{task-name}
 - 第一行写种子示例：`{"_example": "Fill with {\"file\": \"path\", \"reason\": \"why\"}. Seed rows are skipped."}`
 - 如果 `.ccg/spec/` 存在 → 追加 spec 文件条目
 
+`task.json` 中的 `targetRevision`、`targetDigest`、`domainDecisionRef` 和
+`codingTargetDecisions` 只能由 `ccg-task allocate` 生成；不得在任务模板、
+`--ccg-meta` 或其他手工 JSON 写入中添加或修改这些字段。分配需要确定的
+implementer、reviewer、reviewer policy 和 execution target facts；facts 就绪后
+使用 `ccg-task allocate --task-dir <returned taskDir>`，并在重试时复用同一个
+`--allocation-id`。通过 `ccg-task read --task-dir <returned taskDir>` 查看冻结记录。
+
 **复杂度 S → 跳过任务创建**（保持轻量）。
 
 **确认任务已创建后**，输出：

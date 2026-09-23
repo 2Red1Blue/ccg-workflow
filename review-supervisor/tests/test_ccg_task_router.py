@@ -157,6 +157,215 @@ class TaskRouterTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         return Path(json.loads(result.stdout)["taskDir"])
 
+    def allocate_args(self, task_dir, allocation_id="create-1", **overrides):
+        values = {
+            "--allocation-id": allocation_id,
+            "--target-id": "coding:same-task",
+            "--implementer-subject": "ccg:implementer",
+            "--implementer-execution-ref": "run:implementation-1",
+            "--reviewer-subject": "ccg:reviewer",
+            "--reviewer-execution-ref": "run:review-1",
+            "--policy-id": "dual-review",
+            "--policy-revision": "v1",
+            "--policy-digest": "sha256:" + "a" * 64,
+            "--independence-class": "separate",
+            "--execution-target-ref": "personal-runtime:target-1",
+        }
+        values.update(overrides)
+        args = ["allocate", "--task-dir", str(task_dir)]
+        for key, value in values.items():
+            args.extend((key, value))
+        return args
+
+    def test_coding_decision_allocate_replay_and_conflict_are_task_local(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task_dir = self.create_fixture(root)
+            first = self.run_router(root, *self.allocate_args(task_dir))
+            self.assertEqual(0, first.returncode, first.stderr)
+            record = json.loads(first.stdout)["decision"]
+            self.assertEqual("r1", record["targetRevision"])
+            self.assertEqual("sha256:" + "a" * 64, record["reviewerPolicy"]["digest"])
+            replay = self.run_router(root, *self.allocate_args(task_dir))
+            self.assertEqual(0, replay.returncode, replay.stderr)
+            self.assertTrue(json.loads(replay.stdout)["replayed"])
+            self.assertEqual(record, json.loads(replay.stdout)["decision"])
+            conflict = self.run_router(root, *self.allocate_args(
+                task_dir, **{"--implementer-subject": "ccg:other-implementer"},
+            ))
+            self.assertEqual(2, conflict.returncode)
+            self.assertIn("CODING_DECISION_REPLAY_CONFLICT", conflict.stderr)
+            other = self.create_fixture(root, slug="other-task", title="Other")
+            isolated = self.run_router(root, *self.allocate_args(other, **{"--target-id": "coding:other-task"}))
+            self.assertEqual(0, isolated.returncode, isolated.stderr)
+            self.assertEqual("r1", json.loads(isolated.stdout)["decision"]["targetRevision"])
+
+    def test_coding_decisions_are_monotonic_under_concurrent_allocations(self):
+        for provider in ("ccg", "trellis"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                task_dir = self.create_fixture(root, provider)
+                commands = [
+                    [sys.executable, str(SCRIPT), *self.allocate_args(task_dir, "allocation-%d" % index),
+                     "--project-root", str(root)]
+                    for index in range(8)
+                ]
+                processes = [subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                             for command in commands]
+                results = [process.communicate(timeout=30) for process in processes]
+                self.assertTrue(all(process.returncode == 0 for process in processes), results)
+                revisions = sorted(
+                    (json.loads(stdout)["decision"]["targetRevision"] for stdout, _ in results),
+                    key=lambda value: int(value[1:]),
+                )
+                self.assertEqual(["r%d" % index for index in range(1, 9)], revisions)
+                metadata = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+                records = (metadata.get("meta", {}).get("ccg", {}) if provider == "trellis"
+                           else metadata.get("ccg", {}))["codingTargetDecisions"]
+                self.assertEqual(8, len(records))
+
+    def test_coding_decision_read_and_tampering_detection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task_dir = self.create_fixture(root, "trellis")
+            allocated = self.run_router(root, *self.allocate_args(task_dir))
+            self.assertEqual(0, allocated.returncode, allocated.stderr)
+            read = self.run_router(root, "read", "--task-dir", str(task_dir), "--revision", "r1")
+            self.assertEqual(0, read.returncode, read.stderr)
+            record = json.loads(allocated.stdout)["decision"]
+            self.assertEqual(record, json.loads(read.stdout)["decision"])
+            metadata_path = task_dir / "task.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["meta"]["ccg"]["codingTargetDecisions"][0]["reviewer"]["subject"] = "ccg:replacement"
+            metadata_path.write_text(json.dumps(metadata))
+            invalid = self.run_router(root, "read", "--task-dir", str(task_dir))
+            self.assertEqual(2, invalid.returncode)
+            self.assertIn("INVALID_CODING_DECISION", invalid.stderr)
+
+    def test_canonical_task_keeps_one_target_id_across_revisions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task_dir = self.create_fixture(root)
+            first = self.run_router(root, *self.allocate_args(task_dir, "first"))
+            self.assertEqual(0, first.returncode, first.stderr)
+            second = self.run_router(root, *self.allocate_args(
+                task_dir, "second", **{"--target-id": "coding:another-target"},
+            ))
+            self.assertEqual(2, second.returncode)
+            self.assertIn("CODING_TARGET_ID_CONFLICT", second.stderr)
+            read = self.run_router(root, "read", "--task-dir", str(task_dir))
+            self.assertEqual(0, read.returncode, read.stderr)
+            self.assertEqual(["r1"], [record["targetRevision"] for record in json.loads(read.stdout)["decisions"]])
+
+    def test_coding_decision_head_detects_deleted_tail_or_cleared_history(self):
+        for provider in ("ccg", "trellis"):
+            for edit in ("delete-tail", "clear-history"):
+                with self.subTest(provider=provider, edit=edit), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    task_dir = self.create_fixture(root, provider)
+                    allocated = self.run_router(root, *self.allocate_args(task_dir))
+                    self.assertEqual(0, allocated.returncode, allocated.stderr)
+                    second = self.run_router(root, *self.allocate_args(task_dir, "second"))
+                    self.assertEqual(0, second.returncode, second.stderr)
+                    metadata_path = task_dir / "task.json"
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    namespace = (metadata["meta"]["ccg"] if provider == "trellis" else metadata["ccg"])
+                    if edit == "delete-tail":
+                        namespace["codingTargetDecisions"].pop()
+                    else:
+                        namespace["codingTargetDecisions"].clear()
+                    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                    read = self.run_router(root, "read", "--task-dir", str(task_dir))
+                    self.assertEqual(2, read.returncode)
+                    self.assertIn("INVALID_CODING_DECISION_HEAD", read.stderr)
+                    allocate = self.run_router(root, *self.allocate_args(task_dir, "after-edit"))
+                    self.assertEqual(2, allocate.returncode)
+                    self.assertIn("INVALID_CODING_DECISION_HEAD", allocate.stderr)
+
+    def test_coding_decision_fence_detects_removed_json_history_and_head(self):
+        for provider in ("ccg", "trellis"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                task_dir = self.create_fixture(root, provider)
+                allocated = self.run_router(root, *self.allocate_args(task_dir))
+                self.assertEqual(0, allocated.returncode, allocated.stderr)
+                metadata_path = task_dir / "task.json"
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                namespace = metadata["meta"]["ccg"] if provider == "trellis" else metadata["ccg"]
+                del namespace["codingTargetDecisions"]
+                del namespace["codingTargetDecisionHead"]
+                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                for result in (
+                    self.run_router(root, "read", "--task-dir", str(task_dir)),
+                    self.run_router(root, *self.allocate_args(task_dir, "after-removal")),
+                ):
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn("INVALID_CODING_DECISION_FENCE", result.stderr)
+                report = self.run_router(root, "doctor")
+                self.assertEqual(2, report.returncode)
+                self.assertIn(
+                    "CODING_DECISION_FENCE_MISMATCH",
+                    {issue["code"] for issue in json.loads(report.stdout)["issues"]},
+                )
+
+    def test_sidecar_first_write_failure_is_fail_closed_and_doctor_reports(self):
+        for provider in ("ccg", "trellis"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                task_dir = self.create_fixture(root, provider)
+                initial = self.run_router(root, *self.allocate_args(task_dir))
+                self.assertEqual(0, initial.returncode, initial.stderr)
+                original_write = ROUTER._atomic_write_json
+
+                def fail_task_metadata(path, value):
+                    if path.name == "task.json":
+                        raise OSError("simulated interruption after fence publication")
+                    return original_write(path, value)
+
+                with mock.patch.object(ROUTER, "_atomic_write_json", side_effect=fail_task_metadata):
+                    with self.assertRaisesRegex(OSError, "simulated interruption"):
+                        ROUTER.coding_decision(
+                            str(root), str(task_dir), allocation_id="second",
+                            target_id="coding:same-task",
+                            implementer_subject="ccg:implementer",
+                            implementer_execution_ref="run:implementation-1",
+                            reviewer_subject="ccg:reviewer", reviewer_execution_ref="run:review-1",
+                            policy_id="dual-review", policy_revision="v1",
+                            policy_digest="sha256:" + "a" * 64,
+                            independence_class="separate",
+                            execution_target_ref="personal-runtime:target-1",
+                        )
+                sidecar = json.loads((task_dir / ROUTER.CODING_DECISION_FENCE_FILENAME).read_text())
+                self.assertEqual("r2", sidecar["lastRevision"])
+                for result in (
+                    self.run_router(root, "read", "--task-dir", str(task_dir)),
+                    self.run_router(root, *self.allocate_args(task_dir, "third")),
+                ):
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn("INVALID_CODING_DECISION_FENCE", result.stderr)
+                report = self.run_router(root, "doctor")
+                self.assertEqual(2, report.returncode)
+                self.assertIn(
+                    "CODING_DECISION_FENCE_MISMATCH",
+                    {issue["code"] for issue in json.loads(report.stdout)["issues"]},
+                )
+
+    def test_coding_decision_cli_rejects_caller_derived_fields_and_meta_injection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task_dir = self.create_fixture(root)
+            invalid_revision = self.run_router(root, *self.allocate_args(task_dir), "--target-revision", "r9")
+            self.assertEqual(2, invalid_revision.returncode)
+            invalid_digest = self.run_router(root, *self.allocate_args(task_dir), "--target-digest", "sha256:" + "b" * 64)
+            self.assertEqual(2, invalid_digest.returncode)
+            for reserved in ("codingTargetDecisions", "codingTargetDecisionHead"):
+                injected = self.run_router(
+                    root, "ensure", "--title", "Same", "--slug", "same-task",
+                    "--ccg-meta", json.dumps({reserved: {}}),
+                )
+                self.assertEqual(2, injected.returncode)
+                self.assertIn("decision fields require", injected.stderr)
+
     def test_ensure_reuses_exact_identity_and_title_without_writes(self):
         for provider in ("ccg", "trellis"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:

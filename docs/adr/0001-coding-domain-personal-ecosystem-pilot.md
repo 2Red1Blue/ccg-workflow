@@ -21,8 +21,19 @@ policy, and execution target. `domainDecisionRef` is derived from that verified
 digest. Replacing either worker, the policy, or the execution target therefore
 requires a new digest and reference; changing both the decision and attestation
 cannot preserve the old immutable identity. Reusing a revision label with a new
-digest/reference is detectable as a different identity but remains an owner
-workflow allocation error, not something this no-storage seam can adjudicate.
+digest/reference is rejected while the CCG task's persisted history and
+anti-reuse fence remain intact. `ccg-task allocate` serializes allocation under the
+existing project-root flock, assigns the next `rN` within that canonical task,
+requires one stable `targetId` throughout the task history, and accepts an
+allocation ID only for exact replay. Trellis stores the records
+under `meta.ccg.codingTargetDecisions`; fallback CCG tasks use
+`ccg.codingTargetDecisions`. A last-revision/digest/reference head is kept in
+task.json and a task-local anti-reuse sidecar. Allocation durably publishes the
+sidecar before atomically replacing task.json; readers require both heads and
+the full history to agree, so a failed second write or partial history edit
+stays fail-closed. The sidecar stores no decision history and is not a second
+revision ledger or a cross-task sequence. External deletion or rollback of
+both task.json and its sidecar remains outside what this file authority can detect.
 The other systems may retain `domainDecisionRef` but must not rerun the policy
 or store a CCG review verdict.
 
@@ -104,12 +115,14 @@ alter the target, receipt, observation, action, or projection.
 review truth from admission, separate CCG and PR target digests, the exact PR
 receipt, transport-result separation, absence of a CCG Fabric request, and the
 owner-receipt to stable source-observation DTO (including action fence
-identity). `scripts/qualify-personal-runtime-admission.py` requires the clean
+identity). `test_ccg_task_router.py` covers task-local revision allocation,
+concurrent uniqueness, exact replay, target identity stability and tamper refusal.
+`scripts/qualify-personal-runtime-admission.py` requires the clean
 exact PR pin, starts PR's public single-writer owner process, rejects a bad
 credential, submits through CCG's packaged CLI and PR's authenticated socket,
 then validates target/execution input, Delegation revision and aggregate state,
 pending Fabric outbox state, payload/request/source digests, and the recorded
-receipt. Both Python contract tests and this qualification are CI and publish
-gates. Workbench
+receipt. Coding Domain, task-router and review-supervisor tests plus the PR
+qualification are CI and publish gates. Workbench
 owns the cross-repository observation-to-projection and durable/live-inspect
 tests.

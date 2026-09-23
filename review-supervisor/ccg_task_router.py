@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -30,6 +31,17 @@ DOCUMENTS = {
 }
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+ALLOCATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+CODING_DECISION_FENCE_FILENAME = ".ccg-coding-decision-head.json"
+
+_CODING_DOMAIN_SPEC = importlib.util.spec_from_file_location(
+    "ccg_coding_domain", Path(__file__).with_name("ccg_coding_domain.py")
+)
+if _CODING_DOMAIN_SPEC is None or _CODING_DOMAIN_SPEC.loader is None:
+    raise RuntimeError("CODING_DOMAIN_MODULE_UNAVAILABLE")
+coding_domain = importlib.util.module_from_spec(_CODING_DOMAIN_SPEC)
+sys.modules[_CODING_DOMAIN_SPEC.name] = coding_domain
+_CODING_DOMAIN_SPEC.loader.exec_module(coding_domain)
 
 
 class TaskRouterError(Exception):
@@ -174,6 +186,12 @@ def _parse_ccg_meta(raw: Optional[str]) -> Dict[str, Any]:
         raise TaskRouterError("INVALID_CCG_META_JSON: %s" % exc.msg)
     if not isinstance(value, dict):
         raise TaskRouterError("INVALID_CCG_META_JSON: expected an object")
+    reserved = {
+        "codingTargetDecisions", "codingTargetDecisionHead", "targetRevision",
+        "targetDigest", "domainDecisionRef",
+    }
+    if reserved.intersection(value):
+        raise TaskRouterError("INVALID_CCG_META_JSON: Coding decision fields require ccg-task allocate")
     return value
 
 
@@ -188,6 +206,13 @@ def _atomic_write(path: Path, content: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, str(path))
+        directory_descriptor = os.open(
+            str(path.parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -441,9 +466,262 @@ def modify_task(root_path: str, task_path: str, *, document: Optional[str] = Non
         return resolution
 
 
+def _decision_store(resolution: Dict[str, str], data: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    """Return the task-local CCG namespace and immutable decision-list key."""
+    if resolution["provider"] == "trellis":
+        meta = data.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            raise TaskRouterError("INVALID_CCG_META_JSON: task meta must be an object")
+        namespace = meta.setdefault("ccg", {})
+        if not isinstance(namespace, dict):
+            raise TaskRouterError("INVALID_CCG_META_JSON: meta.ccg must be an object")
+    else:
+        namespace = data.setdefault("ccg", {})
+        if not isinstance(namespace, dict):
+            raise TaskRouterError("INVALID_CCG_META_JSON: task ccg must be an object")
+    decisions = namespace.setdefault("codingTargetDecisions", [])
+    if not isinstance(decisions, list):
+        raise TaskRouterError("INVALID_CODING_DECISIONS: expected an array")
+    return namespace, "codingTargetDecisions"
+
+
+def _decision_from_record(record: Any, expected_revision: str) -> Dict[str, Any]:
+    """Validate persisted facts by reconstructing the domain's immutable value."""
+    if not isinstance(record, dict) or set(record) != {
+        "allocationId", "targetId", "targetRevision", "targetDigest", "domainDecisionRef",
+        "implementer", "reviewer", "reviewerPolicy", "executionTargetRef",
+    }:
+        raise TaskRouterError("INVALID_CODING_DECISION: record fields do not match schema")
+    if record["targetRevision"] != expected_revision:
+        raise TaskRouterError("INVALID_CODING_DECISION: revisions must be contiguous and immutable")
+    allocation_id = record["allocationId"]
+    if not isinstance(allocation_id, str) or not ALLOCATION_ID_PATTERN.fullmatch(allocation_id):
+        raise TaskRouterError("INVALID_CODING_DECISION: invalid allocationId")
+    try:
+        implementer_data = record["implementer"]
+        reviewer_data = record["reviewer"]
+        if (not isinstance(implementer_data, dict) or set(implementer_data) != {"subject", "executionRef"}
+                or not isinstance(reviewer_data, dict) or set(reviewer_data) != {"subject", "executionRef"}):
+            raise TaskRouterError("INVALID_CODING_DECISION: invalid worker fields")
+        implementer = coding_domain.WorkerRef(implementer_data["subject"], implementer_data["executionRef"])
+        reviewer = coding_domain.WorkerRef(reviewer_data["subject"], reviewer_data["executionRef"])
+        policy_data = record["reviewerPolicy"]
+        if not isinstance(policy_data, dict) or set(policy_data) != {
+            "id", "revision", "digest", "independenceClass",
+        }:
+            raise TaskRouterError("INVALID_CODING_DECISION: invalid reviewerPolicy fields")
+        policy = coding_domain.ReviewerPolicy(
+            policy_data["id"], policy_data["revision"], policy_data["digest"],
+            policy_data["independenceClass"],
+        )
+        decision = coding_domain.CodingTargetDecision(
+            target_id=record["targetId"], target_revision=record["targetRevision"],
+            target_digest=record["targetDigest"], domain_decision_ref=record["domainDecisionRef"],
+            implementer=implementer, reviewer=reviewer, reviewer_policy=policy,
+            execution_target_ref=record["executionTargetRef"],
+        )
+    except (TypeError, KeyError, coding_domain.ContractError) as exc:
+        raise TaskRouterError("INVALID_CODING_DECISION: %s" % exc)
+    return {
+        "allocationId": allocation_id,
+        "targetId": decision.target_id,
+        "targetRevision": decision.target_revision,
+        "targetDigest": decision.target_digest,
+        "domainDecisionRef": decision.domain_decision_ref,
+        "implementer": {"subject": implementer.subject, "executionRef": implementer.execution_ref},
+        "reviewer": {"subject": reviewer.subject, "executionRef": reviewer.execution_ref},
+        "reviewerPolicy": {
+            "id": policy.policy_id, "revision": policy.revision, "digest": policy.digest,
+            "independenceClass": policy.independence_class,
+        },
+        "executionTargetRef": decision.execution_target_ref,
+    }
+
+
+def _decision_history(resolution: Dict[str, str], data: Dict[str, Any]) -> Tuple[Dict[str, Any], list]:
+    namespace, key = _decision_store(resolution, data)
+    records = namespace[key]
+    validated = []
+    allocations = set()
+    target_id = None
+    for index, record in enumerate(records, 1):
+        normalized = _decision_from_record(record, "r%d" % index)
+        if target_id is not None and normalized["targetId"] != target_id:
+            raise TaskRouterError("INVALID_CODING_DECISION: targetId must stay stable within one task")
+        target_id = normalized["targetId"]
+        if normalized["allocationId"] in allocations:
+            raise TaskRouterError("INVALID_CODING_DECISION: duplicate allocationId")
+        allocations.add(normalized["allocationId"])
+        validated.append(normalized)
+    head_present = "codingTargetDecisionHead" in namespace
+    head = namespace.get("codingTargetDecisionHead")
+    if not validated:
+        if head_present:
+            raise TaskRouterError("INVALID_CODING_DECISION_HEAD: no history matches stored head")
+    else:
+        expected_head = {
+            "lastRevision": validated[-1]["targetRevision"],
+            "lastTargetDigest": validated[-1]["targetDigest"],
+            "lastDomainDecisionRef": validated[-1]["domainDecisionRef"],
+        }
+        if head != expected_head:
+            raise TaskRouterError("INVALID_CODING_DECISION_HEAD: stored head does not match full history")
+    return namespace, validated
+
+
+def _decision_head(history: list) -> Optional[Dict[str, str]]:
+    if not history:
+        return None
+    last = history[-1]
+    return {
+        "lastRevision": last["targetRevision"],
+        "lastTargetDigest": last["targetDigest"],
+        "lastDomainDecisionRef": last["domainDecisionRef"],
+    }
+
+
+def _decision_fence_path(task_dir: Path) -> Path:
+    return _inside(task_dir, task_dir / CODING_DECISION_FENCE_FILENAME)
+
+
+def _validate_decision_fence(task_dir: Path, history: list) -> None:
+    """Require the CCG-owned anti-reuse fence to match task.json history."""
+    path = _decision_fence_path(task_dir)
+    expected = _decision_head(history)
+    exists = path.exists()
+    if expected is None:
+        if exists:
+            raise TaskRouterError("INVALID_CODING_DECISION_FENCE: fence exists without task history")
+        return
+    if not exists:
+        raise TaskRouterError("INVALID_CODING_DECISION_FENCE: task history has no fence")
+    try:
+        actual = json.loads(_read_bounded(path))
+    except (TaskRouterError, ValueError, UnicodeError) as exc:
+        raise TaskRouterError("INVALID_CODING_DECISION_FENCE: %s" % exc)
+    if not isinstance(actual, dict) or set(actual) != {
+        "lastRevision", "lastTargetDigest", "lastDomainDecisionRef",
+    } or actual != expected:
+        raise TaskRouterError("INVALID_CODING_DECISION_FENCE: fence does not match task history")
+
+
+def _decision_facts(allocation_id: str, target_id: str, implementer_subject: str,
+                    implementer_execution_ref: str, reviewer_subject: str,
+                    reviewer_execution_ref: str, policy_id: str, policy_revision: str,
+                    policy_digest: str, independence_class: str,
+                    execution_target_ref: str) -> Dict[str, Any]:
+    if not ALLOCATION_ID_PATTERN.fullmatch(allocation_id or ""):
+        raise TaskRouterError("INVALID_ALLOCATION_ID")
+    try:
+        implementer = coding_domain.WorkerRef(implementer_subject, implementer_execution_ref)
+        reviewer = coding_domain.WorkerRef(reviewer_subject, reviewer_execution_ref)
+        policy = coding_domain.ReviewerPolicy(policy_id, policy_revision, policy_digest, independence_class)
+        target_revision = "r1"  # Replaced under the task lock after history is read.
+        target_digest = coding_domain.coding_target_digest(
+            target_id, target_revision, implementer, reviewer, policy, execution_target_ref,
+        )
+        coding_domain.CodingTargetDecision(
+            target_id=target_id, target_revision=target_revision, target_digest=target_digest,
+            domain_decision_ref=coding_domain.coding_domain_decision_ref(target_digest),
+            implementer=implementer, reviewer=reviewer, reviewer_policy=policy,
+            execution_target_ref=execution_target_ref,
+        )
+    except coding_domain.ContractError as exc:
+        raise TaskRouterError("INVALID_CODING_DECISION: %s" % exc)
+    return {
+        "allocationId": allocation_id, "targetId": target_id,
+        "implementer": {"subject": implementer.subject, "executionRef": implementer.execution_ref},
+        "reviewer": {"subject": reviewer.subject, "executionRef": reviewer.execution_ref},
+        "reviewerPolicy": {"id": policy.policy_id, "revision": policy.revision,
+                           "digest": policy.digest, "independenceClass": policy.independence_class},
+        "executionTargetRef": execution_target_ref,
+    }
+
+
+def coding_decision(root_path: str, task_path: str, *, allocation_id: Optional[str] = None,
+                    target_id: Optional[str] = None, implementer_subject: Optional[str] = None,
+                    implementer_execution_ref: Optional[str] = None,
+                    reviewer_subject: Optional[str] = None, reviewer_execution_ref: Optional[str] = None,
+                    policy_id: Optional[str] = None, policy_revision: Optional[str] = None,
+                    policy_digest: Optional[str] = None, independence_class: Optional[str] = None,
+                    execution_target_ref: Optional[str] = None,
+                    target_revision: Optional[str] = None) -> Dict[str, Any]:
+    """Allocate or read immutable Coding decisions owned by one canonical task."""
+    root = _canonical_directory(root_path)
+    with _root_lock(root):
+        resolution = resolve_task_root(str(root))
+        task_dir, data = _existing_task(resolution, task_path)
+        namespace, history = _decision_history(resolution, data)
+        _validate_decision_fence(task_dir, history)
+        if allocation_id is None:
+            if any(value is not None for value in (
+                target_id, implementer_subject, implementer_execution_ref, reviewer_subject,
+                reviewer_execution_ref, policy_id, policy_revision, policy_digest,
+                independence_class, execution_target_ref,
+            )):
+                raise TaskRouterError("DECISION_READ_REJECTS_FACTS")
+            if target_revision is None:
+                return {"taskDir": str(task_dir), "taskId": data["id"], "decisions": history}
+            for record in history:
+                if record["targetRevision"] == target_revision:
+                    return {"taskDir": str(task_dir), "taskId": data["id"], "decision": record}
+            raise TaskRouterError("CODING_DECISION_NOT_FOUND: %s" % target_revision)
+        if target_revision is not None:
+            raise TaskRouterError("CALLER_SUPPLIED_TARGET_REVISION")
+        values = (target_id, implementer_subject, implementer_execution_ref, reviewer_subject,
+                  reviewer_execution_ref, policy_id, policy_revision, policy_digest,
+                  independence_class, execution_target_ref)
+        if any(value is None for value in values):
+            raise TaskRouterError("CODING_DECISION_FACTS_REQUIRED")
+        facts = _decision_facts(
+            allocation_id, target_id, implementer_subject, implementer_execution_ref,
+            reviewer_subject, reviewer_execution_ref, policy_id, policy_revision,
+            policy_digest, independence_class, execution_target_ref,
+        )
+        prior = next((record for record in history if record["allocationId"] == allocation_id), None)
+        if prior is not None:
+            if {key: prior[key] for key in facts} != facts:
+                raise TaskRouterError("CODING_DECISION_REPLAY_CONFLICT: %s" % allocation_id)
+            return {"taskDir": str(task_dir), "taskId": data["id"], "decision": prior, "replayed": True}
+        if history and facts["targetId"] != history[0]["targetId"]:
+            raise TaskRouterError("CODING_TARGET_ID_CONFLICT: a canonical task keeps one targetId")
+        revision = "r%d" % (len(history) + 1)
+        implementer = coding_domain.WorkerRef(implementer_subject, implementer_execution_ref)
+        reviewer = coding_domain.WorkerRef(reviewer_subject, reviewer_execution_ref)
+        policy = coding_domain.ReviewerPolicy(policy_id, policy_revision, policy_digest, independence_class)
+        digest = coding_domain.coding_target_digest(
+            target_id, revision, implementer, reviewer, policy, execution_target_ref,
+        )
+        decision = coding_domain.CodingTargetDecision(
+            target_id=target_id, target_revision=revision, target_digest=digest,
+            domain_decision_ref=coding_domain.coding_domain_decision_ref(digest),
+            implementer=implementer, reviewer=reviewer, reviewer_policy=policy,
+            execution_target_ref=execution_target_ref,
+        )
+        record = {
+            **facts, "targetRevision": revision, "targetDigest": decision.target_digest,
+            "domainDecisionRef": decision.domain_decision_ref,
+        }
+        namespace["codingTargetDecisions"].append(record)
+        namespace["codingTargetDecisionHead"] = {
+            "lastRevision": revision,
+            "lastTargetDigest": decision.target_digest,
+            "lastDomainDecisionRef": decision.domain_decision_ref,
+        }
+        _atomic_write_json(_decision_fence_path(task_dir), _decision_head([record]))
+        _atomic_write_json(task_dir / "task.json", data)
+        return {"taskDir": str(task_dir), "taskId": data["id"], "decision": record, "replayed": False}
+
+
 def doctor(root_path: str) -> Dict[str, Any]:
-    resolution = resolve_task_root(root_path)
-    root = Path(resolution["root"])
+    """Inspect one owner snapshot without observing an allocation between its two file writes."""
+    root = _canonical_directory(root_path)
+    with _root_lock(root):
+        return _doctor_locked(root)
+
+
+def _doctor_locked(root: Path) -> Dict[str, Any]:
+    resolution = resolve_task_root(str(root))
     issues = []
     identities = {}
     for provider in (resolution["provider"], "ccg" if resolution["provider"] == "trellis" else "trellis"):
@@ -468,10 +746,19 @@ def doctor(root_path: str) -> Dict[str, Any]:
                 identities.setdefault(data["id"], []).append(str(entry))
                 _validate_title(data, entry / "task.json")
                 _validate_owner({"provider": provider, "tasksDir": str(tasks_dir)}, entry, data)
+                _, decision_history = _decision_history(
+                    {"provider": provider, "tasksDir": str(tasks_dir)}, data,
+                )
+                _validate_decision_fence(entry, decision_history)
                 if provider != resolution["provider"]:
                     issues.append({"code": "ORPHAN_TASK", "path": str(entry)})
             except (TaskRouterError, OSError) as exc:
-                issues.append({"code": "INCOMPLETE_TASK", "path": str(entry), "detail": str(exc)})
+                code = (
+                    "CODING_DECISION_FENCE_MISMATCH"
+                    if str(exc).startswith(("INVALID_CODING_DECISION_HEAD", "INVALID_CODING_DECISION_FENCE"))
+                    else "INCOMPLETE_TASK"
+                )
+                issues.append({"code": code, "path": str(entry), "detail": str(exc)})
     for identity, paths in identities.items():
         if len(paths) > 1:
             issues.append({"code": "DUPLICATE_TASK_ID", "id": identity, "paths": paths})
@@ -498,7 +785,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("resolve", "create", "ensure", "write", "update", "doctor"):
+    for command in ("resolve", "create", "ensure", "write", "update", "doctor", "allocate", "read"):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--project-root")
         command_parser.add_argument("--workspace-root")
@@ -515,6 +802,22 @@ def main() -> int:
         if command == "update":
             command_parser.add_argument("--phase", choices=PHASES, required=True)
             command_parser.add_argument("--next-action", required=True)
+        if command in ("allocate", "read"):
+            command_parser.add_argument("--task-dir", required=True)
+        if command == "allocate":
+            command_parser.add_argument("--allocation-id", required=True)
+            command_parser.add_argument("--target-id", required=True)
+            command_parser.add_argument("--implementer-subject", required=True)
+            command_parser.add_argument("--implementer-execution-ref", required=True)
+            command_parser.add_argument("--reviewer-subject", required=True)
+            command_parser.add_argument("--reviewer-execution-ref", required=True)
+            command_parser.add_argument("--policy-id", required=True)
+            command_parser.add_argument("--policy-revision", required=True)
+            command_parser.add_argument("--policy-digest", required=True)
+            command_parser.add_argument("--independence-class", required=True)
+            command_parser.add_argument("--execution-target-ref", required=True)
+        if command == "read":
+            command_parser.add_argument("--revision")
 
     args = parser.parse_args()
     try:
@@ -531,6 +834,18 @@ def main() -> int:
         elif args.command == "write":
             _emit(modify_task(_selected_root(args), args.task_dir, document=args.document,
                               content_file=args.content_file))
+        elif args.command == "allocate":
+            _emit(coding_decision(
+                _selected_root(args), args.task_dir, allocation_id=args.allocation_id,
+                target_id=args.target_id, implementer_subject=args.implementer_subject,
+                implementer_execution_ref=args.implementer_execution_ref,
+                reviewer_subject=args.reviewer_subject, reviewer_execution_ref=args.reviewer_execution_ref,
+                policy_id=args.policy_id, policy_revision=args.policy_revision,
+                policy_digest=args.policy_digest, independence_class=args.independence_class,
+                execution_target_ref=args.execution_target_ref,
+            ))
+        elif args.command == "read":
+            _emit(coding_decision(_selected_root(args), args.task_dir, target_revision=args.revision))
         else:
             _emit(modify_task(_selected_root(args), args.task_dir, phase=args.phase,
                               next_action=args.next_action))

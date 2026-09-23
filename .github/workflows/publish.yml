@@ -79,6 +79,9 @@ jobs:
       - name: Test review supervisor admission integration
         run: pnpm run test:review-supervisor
 
+      - name: Test CCG task owner revision allocation
+        run: pnpm run test:task-router
+
       - name: Qualify public Personal Runtime admission
         run: pnpm run qualify:personal-runtime --personal-runtime .qualification/personal-runtime
 

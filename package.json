@@ -91,6 +91,7 @@
     "test": "vitest run",
     "test:coding-domain": "python3 -m unittest discover -s review-supervisor/tests -p 'test_ccg_coding_domain*.py'",
     "test:review-supervisor": "python3 -m unittest discover -s review-supervisor/tests -p 'test_ccg_agent_supervisor.py'",
+    "test:task-router": "python3 -m unittest discover -s review-supervisor/tests -p 'test_ccg_task_router.py'",
     "qualify:personal-runtime": "python3 scripts/qualify-personal-runtime-admission.py",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
