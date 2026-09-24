@@ -45,7 +45,7 @@ ROUTER.coding_decision(
 _FROZEN_LOCATOR = {"root": str(_DECISION_ROOT), "taskDir": str(_DECISION_TASK), "taskId": "consumer-test"}
 
 
-def request_payload():
+def request_payload(*, locator=None, target_revision="r7"):
     reviewer = {"subject": "ccg-reviewer", "executionRef": "run:review-1"}
     policy = {
         "id": "dual-leaf",
@@ -59,7 +59,7 @@ def request_payload():
     }
     target_digest = DOMAIN.coding_target_digest(
         "coding:target-17",
-        "r7",
+        target_revision,
         DOMAIN.WorkerRef(implementer["subject"], implementer["executionRef"]),
         DOMAIN.WorkerRef(reviewer["subject"], reviewer["executionRef"]),
         DOMAIN.ReviewerPolicy(
@@ -72,11 +72,11 @@ def request_payload():
     )
     return {
         "schemaVersion": "ccg.coding-admission-request.v1",
-        "frozenDecisionLocator": dict(_FROZEN_LOCATOR),
+        "frozenDecisionLocator": dict(locator or _FROZEN_LOCATOR),
         "requestId": "request-17",
         "target": {
             "targetId": "coding:target-17",
-            "targetRevision": "r7",
+            "targetRevision": target_revision,
             "targetDigest": target_digest,
             "domainDecisionRef": DOMAIN.coding_domain_decision_ref(target_digest),
             "implementer": implementer,
@@ -86,7 +86,7 @@ def request_payload():
         },
         "reviewAttestation": {
             "targetId": "coding:target-17",
-            "targetRevision": "r7",
+            "targetRevision": target_revision,
             "targetDigest": target_digest,
             "reviewer": reviewer,
             "reviewerPolicy": policy,
@@ -159,6 +159,64 @@ class FlowTest(unittest.TestCase):
         with self.assertRaisesRegex(DOMAIN.ContractError, "canonical task"):
             DOMAIN.execute_coding_admission(port, value)
         self.assertFalse(port.touched)
+
+    def test_trellis_date_prefixed_task_accepts_frozen_admission(self):
+        with tempfile.TemporaryDirectory(prefix="ccg-frozen-trellis-") as temporary:
+            root = Path(temporary)
+            trellis = root / ".trellis"
+            (trellis / "scripts").mkdir(parents=True)
+            (trellis / "workflow.md").write_text("workflow\n", encoding="utf-8")
+            (trellis / "scripts" / "task.py").write_text(
+                "import argparse, json\nfrom pathlib import Path\n"
+                "p=argparse.ArgumentParser(); p.add_argument('command'); p.add_argument('title'); p.add_argument('--slug'); a=p.parse_args()\n"
+                "d=Path('.trellis/tasks') / ('08-28-' + a.slug); d.mkdir(parents=True)\n"
+                "(d/'task.json').write_text(json.dumps({'id': a.slug, 'title': a.title, 'meta': {}}))\n",
+                encoding="utf-8",
+            )
+            resolution, task_dir = ROUTER.create_task(
+                str(root), "Trellis consumer", "trellis-consumer", {},
+            )
+            record = ROUTER.coding_decision(
+                str(root), str(task_dir), allocation_id="trellis-admission",
+                target_id="coding:target-17", implementer_subject="ccg-implementer",
+                implementer_execution_ref="run:implement-1", reviewer_subject="ccg-reviewer",
+                reviewer_execution_ref="run:review-1", policy_id="dual-leaf", policy_revision="v2",
+                policy_digest=POLICY_DIGEST, independence_class="separate-subject-and-run",
+                execution_target_ref="personal-runtime:resolved-target",
+            )["decision"]
+            locator = {
+                "root": resolution["root"],
+                "taskDir": str(task_dir),
+                "taskId": resolution["taskId"],
+            }
+
+            class Port:
+                submitted = None
+
+                def commit(self, command):
+                    self.submitted = command
+                    return {
+                        "schemaVersion": "personal-runtime.delegation-admission-receipt.v1",
+                        "callerId": "ccg-caller",
+                        "commandId": "request-17",
+                        "payloadDigest": command["payloadDigest"],
+                        "contextDigest": CONTEXT_DIGEST,
+                        "status": "RECORDED",
+                        "delegationId": "delegation-17",
+                        "delegationRevision": 1,
+                        "delegationVersion": 2,
+                        "outboxCommandId": DOMAIN.personal_runtime_outbox_command_id(
+                            "ccg-caller", "request-17"
+                        ),
+                        "recordedAt": "2026-09-21T00:00:01.000Z",
+                    }
+
+            port = Port()
+            result = DOMAIN.execute_coding_admission(
+                port, request_payload(locator=locator, target_revision=record["targetRevision"]),
+            )
+        self.assertEqual("RECORDED", result["status"])
+        self.assertEqual("08-28-trellis-consumer", Path(locator["taskDir"]).name)
 
     def test_supported_flow_constructs_decision_commits_and_emits_observation(self):
         class Port:

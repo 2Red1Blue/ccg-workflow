@@ -609,6 +609,19 @@ class SupervisorReviewTest(unittest.TestCase):
             self.assertEqual("outcome_unknown", status["coding_admission"]["state"])
             self.assertEqual(self._run_id(completed), status["coding_admission"]["carried_from_run"])
             self.assertEqual(1, len(server.commands))
+            retried_again = self._review(
+                environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
+                extra_args=[
+                    "--coding-admission-config",
+                    str(config),
+                    "--retry-run",
+                    self._run_id(retried),
+                ],
+            )
+            self.assertEqual(1, retried_again.returncode)
+            final_status = self._status_of(self._run_id(retried_again))
+            self.assertEqual("outcome_unknown", final_status["coding_admission"]["state"])
+            self.assertEqual(1, len(server.commands))
 
     def test_retry_cannot_drop_prior_admission_context(self) -> None:
         with self._admission_server(mode="abort") as server:
@@ -669,6 +682,15 @@ class SupervisorReviewTest(unittest.TestCase):
             )
             self.assertEqual(0, retried.returncode, retried.stderr.decode())
             second_admission = self._status_of(self._run_id(retried))["coding_admission"]
+            retried_again = self._review(
+                environment=environment,
+                extra_args=[
+                    "--coding-admission-config", str(config),
+                    "--retry-run", self._run_id(retried),
+                ],
+            )
+            self.assertEqual(0, retried_again.returncode, retried_again.stderr.decode())
+            third_admission = self._status_of(self._run_id(retried_again))["coding_admission"]
             decisions = ccg_task_router.coding_decision(
                 self.coding_resolution["root"], str(self.coding_task_dir),
             )["decisions"]
@@ -677,6 +699,9 @@ class SupervisorReviewTest(unittest.TestCase):
         self.assertEqual(first_admission["target_revision"], second_admission["target_revision"])
         self.assertEqual(first_admission["target_digest"], second_admission["target_digest"])
         self.assertEqual(first_admission["command_id"], second_admission["command_id"])
+        self.assertEqual(first_admission["target_revision"], third_admission["target_revision"])
+        self.assertEqual(first_admission["target_digest"], third_admission["target_digest"])
+        self.assertEqual(first_admission["command_id"], third_admission["command_id"])
         self.assertEqual(1, len(server.commands))
         self.assertEqual(1, len(decisions))
 

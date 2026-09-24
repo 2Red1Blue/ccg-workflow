@@ -1400,11 +1400,15 @@ def reuse_leaf_results(root: Path, run_id: str | None, metadata: dict, directory
             verdict, error = validate_leaf_text(content.decode("utf-8"), contract)
             if error or sha256_bytes(content) != result["report"]["sha256"]:
                 raise ValueError("retry report integrity check failed")
+            origin_run = result.get("reused_from_run", run_id)
+            if not isinstance(origin_run, str) or RUN_ID_RE.fullmatch(origin_run) is None:
+                raise ValueError("retry leaf receipt has invalid source-run provenance")
             write_private_bytes(directory / report.name, content)
             # Logs/partials are not copied; point provenance at the source run
-            # rather than claiming nonexistent files in the new directory.
-            results[name] = {**result, "reused_from_run": run_id,
-                             "stderr": {"path": None, "source_run": run_id}, "partial_report": None}
+            # rather than claiming nonexistent files in the new directory. A
+            # retry-of-retry keeps the original run that produced the receipt.
+            results[name] = {**result, "reused_from_run": origin_run,
+                             "stderr": {"path": None, "source_run": origin_run}, "partial_report": None}
             if contract == REVIEW_CONTRACT:
                 results[name]["verdict"] = verdict
             else:

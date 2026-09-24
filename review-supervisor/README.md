@@ -262,7 +262,8 @@ an allocation ID with changed facts fails. `read` validates the full history
 and its task-local head before returning it. The head records the last revision,
 digest, and decision reference in the same atomic `task.json` replacement, so a
 missing tail or cleared history is rejected. A task-local
-`.ccg-coding-decision-head.json` sidecar stores only those three head values.
+`.ccg-coding-decision-head.json` sidecar stores those head values and the digest
+of the complete normalized history, including every allocation ID.
 Allocation publishes the sidecar before replacing `task.json`; reads,
 allocations, and `doctor` require both copies and the complete decision history
 to agree, and report mismatches without repair. `doctor` takes the same root lock,

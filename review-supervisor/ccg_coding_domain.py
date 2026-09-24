@@ -253,8 +253,7 @@ def require_frozen_coding_decision(locator: Mapping[str, object], decision: "Cod
             "executionTargetRef": decision.execution_target_ref,
         }
         canonical_task_dir = str(Path(task_dir).resolve())
-        if (result.get("taskDir") != canonical_task_dir or result.get("taskId") != task_id
-                or Path(canonical_task_dir).name != task_id):
+        if result.get("taskDir") != canonical_task_dir or result.get("taskId") != task_id:
             raise ContractError("frozen decision locator does not identify its canonical task")
         if any(record.get(key) != value for key, value in expected.items()):
             raise ContractError("coding decision does not match the frozen CCG allocation")
