@@ -18,6 +18,31 @@ SPEC.loader.exec_module(DOMAIN)
 DIGEST = "sha256:" + "a" * 64
 POLICY_DIGEST = "sha256:" + "b" * 64
 CONTEXT_DIGEST = "sha256:" + "c" * 64
+_DECISION_TEMP = tempfile.TemporaryDirectory(prefix="ccg-consumer-decision-")
+_DECISION_ROOT = Path(_DECISION_TEMP.name)
+sys.path.insert(0, str(SCRIPT.parent))
+import ccg_task_router as ROUTER
+_DECISION_RESOLUTION, _DECISION_TASK = ROUTER.create_task(
+    str(_DECISION_ROOT), "Consumer test", "consumer-test", {},
+)
+for _index in range(1, 7):
+    ROUTER.coding_decision(
+        str(_DECISION_ROOT), str(_DECISION_TASK), allocation_id=f"prior-{_index}",
+        target_id="coding:target-17", implementer_subject="ccg-implementer",
+        implementer_execution_ref=f"run:prior-{_index}", reviewer_subject="ccg-reviewer",
+        reviewer_execution_ref="run:review-1", policy_id="dual-leaf", policy_revision="v2",
+        policy_digest=POLICY_DIGEST, independence_class="separate-subject-and-run",
+        execution_target_ref="personal-runtime:resolved-target",
+    )
+ROUTER.coding_decision(
+    str(_DECISION_ROOT), str(_DECISION_TASK), allocation_id="selected-r7",
+    target_id="coding:target-17", implementer_subject="ccg-implementer",
+    implementer_execution_ref="run:implement-1", reviewer_subject="ccg-reviewer",
+    reviewer_execution_ref="run:review-1", policy_id="dual-leaf", policy_revision="v2",
+    policy_digest=POLICY_DIGEST, independence_class="separate-subject-and-run",
+    execution_target_ref="personal-runtime:resolved-target",
+)
+_FROZEN_LOCATOR = {"root": str(_DECISION_ROOT), "taskDir": str(_DECISION_TASK), "taskId": "consumer-test"}
 
 
 def request_payload():
@@ -47,6 +72,7 @@ def request_payload():
     )
     return {
         "schemaVersion": "ccg.coding-admission-request.v1",
+        "frozenDecisionLocator": dict(_FROZEN_LOCATOR),
         "requestId": "request-17",
         "target": {
             "targetId": "coding:target-17",
@@ -93,6 +119,47 @@ def request_payload():
 
 
 class FlowTest(unittest.TestCase):
+    def test_never_allocated_self_consistent_revision_is_rejected_before_port(self):
+        value = request_payload()
+        target = value["target"]
+        target["targetRevision"] = "r999"
+        target["targetDigest"] = DOMAIN.coding_target_digest(
+            target["targetId"], target["targetRevision"],
+            DOMAIN.WorkerRef(target["implementer"]["subject"], target["implementer"]["executionRef"]),
+            DOMAIN.WorkerRef(target["reviewer"]["subject"], target["reviewer"]["executionRef"]),
+            DOMAIN.ReviewerPolicy(**{
+                "policy_id": target["reviewerPolicy"]["id"],
+                "revision": target["reviewerPolicy"]["revision"],
+                "digest": target["reviewerPolicy"]["digest"],
+                "independence_class": target["reviewerPolicy"]["independenceClass"],
+            }), target["executionTargetRef"],
+        )
+        target["domainDecisionRef"] = DOMAIN.coding_domain_decision_ref(target["targetDigest"])
+        value["reviewAttestation"].update({
+            "targetRevision": target["targetRevision"],
+            "targetDigest": target["targetDigest"],
+        })
+        class Port:
+            touched = False
+            def commit(self, _command):
+                self.touched = True
+        port = Port()
+        with self.assertRaisesRegex(DOMAIN.ContractError, "CODING_DECISION_NOT_FOUND"):
+            DOMAIN.execute_coding_admission(port, value)
+        self.assertFalse(port.touched)
+
+    def test_wrong_task_identity_is_rejected_before_port(self):
+        value = request_payload()
+        value["frozenDecisionLocator"]["taskId"] = "different-task"
+        class Port:
+            touched = False
+            def commit(self, _command):
+                self.touched = True
+        port = Port()
+        with self.assertRaisesRegex(DOMAIN.ContractError, "canonical task"):
+            DOMAIN.execute_coding_admission(port, value)
+        self.assertFalse(port.touched)
+
     def test_supported_flow_constructs_decision_commits_and_emits_observation(self):
         class Port:
             submitted = None

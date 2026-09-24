@@ -26,6 +26,7 @@ supervisor = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = supervisor
 _spec.loader.exec_module(supervisor)
 import ccg_coding_domain as coding_domain
+import ccg_task_router
 
 
 FAKE_CODEX = r'''#!/usr/bin/env python3
@@ -190,6 +191,9 @@ class SupervisorReviewTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        self.coding_resolution, self.coding_task_dir = ccg_task_router.create_task(
+            str(self.root), "Supervisor coding target", "supervisor-coding-target", {},
+        )
         self.run_root = self.root / "runs"
         self.workdir = self.root / "work"
         self.sync = self.root / "sync"
@@ -318,7 +322,11 @@ class SupervisorReviewTest(unittest.TestCase):
             },
             "request": {
                 "targetId": "coding:target-supervisor",
-                "targetRevision": "r1",
+                "frozenDecisionLocator": {
+                    "root": self.coding_resolution["root"],
+                    "taskDir": str(self.coding_task_dir),
+                    "taskId": self.coding_resolution["taskId"],
+                },
                 "reviewerPolicy": {
                     "id": "dual-leaf",
                     "revision": "v2",
@@ -354,7 +362,7 @@ class SupervisorReviewTest(unittest.TestCase):
                         "workspaceRef": "workspace:supervisor",
                     },
                     "constraintReceiptRefs": [],
-                    "resolutionReason": "frozen supervisor target r1",
+                    "resolutionReason": "approved CCG supervisor target",
                 },
             },
         }
@@ -460,7 +468,7 @@ class SupervisorReviewTest(unittest.TestCase):
             self.assertTrue(report.is_file())
             self.assertEqual(0o600, stat.S_IMODE(report.stat().st_mode))
 
-    def test_real_implementer_receipt_and_review_leaf_admit_independently(self) -> None:
+    def test_supervisor_allocates_actual_reviewer_decision_before_socket(self) -> None:
         with self._admission_server() as server:
             config = self._coding_admission_config(server.path)
             completed = self._review(
@@ -472,24 +480,16 @@ class SupervisorReviewTest(unittest.TestCase):
         self.assertEqual("succeeded", status["state"])
         admission = status["coding_admission"]
         self.assertEqual("recorded", admission["state"])
-        # The implementer is the CCG receipt, not a review leaf.
-        self.assertEqual("ccg:implementer:local", admission["implementer"]["subject"])
-        self.assertEqual("ccg:implementation:implement-run-1", admission["implementer"]["executionRef"])
-        self.assertNotIn(":leaf-terminal:", admission["implementer"]["executionRef"])
-        # The reviewer is the frozen review leaf.
-        self.assertEqual("ccg:claude:reviewer", admission["reviewer"]["subject"])
-        self.assertIn(":claude:", admission["reviewer"]["executionRef"])
-        self.assertNotEqual(admission["implementer"]["executionRef"], admission["reviewer"]["executionRef"])
-        self.assertEqual("ccg-supervisor-test", server.command["callerIdentity"])
-        self.assertEqual(
-            admission["domain_decision_ref"],
-            "ccg:decision:" + admission["target_digest"].removeprefix("sha256:"),
-        )
-        self.assertEqual(
-            admission["command_id"],
-            coding_domain.coding_admission_command_id(admission["target_digest"]),
-        )
-        self.assertEqual(server.command["commandId"], admission["command_id"])
+        reviewer = admission["reviewer"]
+        self.assertTrue(reviewer["executionRef"].startswith("ccg:leaf-terminal:"))
+        decisions = ccg_task_router.coding_decision(
+            self.coding_resolution["root"], str(self.coding_task_dir),
+        )["decisions"]
+        self.assertEqual(1, len(decisions))
+        self.assertEqual("r1", decisions[0]["targetRevision"])
+        self.assertEqual(reviewer["executionRef"], decisions[0]["reviewer"]["executionRef"])
+        self.assertEqual(admission["target_digest"], decisions[0]["targetDigest"])
+        self.assertEqual(admission["command_id"], server.command["commandId"])
 
     def test_review_leaf_cannot_masquerade_as_implementer(self) -> None:
         with self._admission_server() as server:
@@ -595,7 +595,6 @@ class SupervisorReviewTest(unittest.TestCase):
             self.assertEqual("failed", source["state"])
             self.assertEqual("outcome_unknown", source["coding_admission"]["state"])
             self.assertEqual(1, len(server.commands))
-            # A retry must carry the unknown outcome forward, never resubmit.
             retried = self._review(
                 environment={"CCG_TEST_ADMISSION_TOKEN": "test-token"},
                 extra_args=[
@@ -649,7 +648,7 @@ class SupervisorReviewTest(unittest.TestCase):
         self.assertEqual("failed", status["state"])
         self.assertEqual("unavailable", status["coding_admission"]["state"])
 
-    def test_retry_reuses_source_identity_decision_and_command_id(self) -> None:
+    def test_retry_reuses_the_exact_frozen_decision(self) -> None:
         with self._admission_server() as server:
             config = self._coding_admission_config(server.path)
             environment = {"CCG_TEST_ADMISSION_TOKEN": "test-token"}
@@ -670,14 +669,35 @@ class SupervisorReviewTest(unittest.TestCase):
             )
             self.assertEqual(0, retried.returncode, retried.stderr.decode())
             second_admission = self._status_of(self._run_id(retried))["coding_admission"]
-        # Same immutable decision, same command ID and execution identities.
-        self.assertEqual(first_admission["command_id"], second_admission["command_id"])
+            decisions = ccg_task_router.coding_decision(
+                self.coding_resolution["root"], str(self.coding_task_dir),
+            )["decisions"]
+        self.assertEqual("recorded", first_admission["state"])
+        self.assertEqual("recorded", second_admission["state"])
+        self.assertEqual(first_admission["target_revision"], second_admission["target_revision"])
         self.assertEqual(first_admission["target_digest"], second_admission["target_digest"])
-        self.assertEqual(first_admission["implementer"], second_admission["implementer"])
-        self.assertEqual(first_admission["reviewer"], second_admission["reviewer"])
-        self.assertEqual(self._run_id(first), second_admission["carried_from_run"])
-        # The recorded receipt was reused, not resubmitted.
+        self.assertEqual(first_admission["command_id"], second_admission["command_id"])
         self.assertEqual(1, len(server.commands))
+        self.assertEqual(1, len(decisions))
+
+    def test_new_leaf_execution_allocates_next_task_local_revision(self) -> None:
+        with self._admission_server() as server:
+            config = self._coding_admission_config(server.path)
+            environment = {"CCG_TEST_ADMISSION_TOKEN": "test-token"}
+            first = self._review(environment=environment, extra_args=["--coding-admission-config", str(config)])
+            second = self._review(environment=environment, extra_args=["--coding-admission-config", str(config)])
+            self.assertEqual(0, first.returncode, first.stderr.decode())
+            self.assertEqual(0, second.returncode, second.stderr.decode())
+            first_admission = self._status_of(self._run_id(first))["coding_admission"]
+            second_admission = self._status_of(self._run_id(second))["coding_admission"]
+            decisions = ccg_task_router.coding_decision(
+                self.coding_resolution["root"], str(self.coding_task_dir),
+            )["decisions"]
+        self.assertEqual("r1", first_admission["target_revision"])
+        self.assertEqual("r2", second_admission["target_revision"])
+        self.assertNotEqual(first_admission["reviewer"], second_admission["reviewer"])
+        self.assertEqual(["r1", "r2"], [record["targetRevision"] for record in decisions])
+        self.assertEqual(2, len(server.commands))
 
     def test_cancellation_before_admission_is_not_an_admission_failure(self) -> None:
         with self._admission_server() as server:

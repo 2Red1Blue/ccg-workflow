@@ -220,6 +220,50 @@ def coding_admission_command_id(target_digest: str) -> str:
     return "ccg:admission:" + digest.removeprefix("sha256:")
 
 
+def require_frozen_coding_decision(locator: Mapping[str, object], decision: "CodingTargetDecision") -> None:
+    """Require every supplied decision fact to match a root-locked CCG allocation."""
+    if set(locator) != {"root", "taskDir", "taskId"}:
+        raise ContractError("frozenDecisionLocator requires root, taskDir, and taskId")
+    root, task_dir, task_id = (locator.get(key) for key in ("root", "taskDir", "taskId"))
+    for label, value in (("root", root), ("taskDir", task_dir), ("taskId", task_id)):
+        _nonblank(value, f"frozenDecisionLocator.{label}")
+    try:
+        import importlib.util
+        import sys
+
+        router_path = Path(__file__).with_name("ccg_task_router.py")
+        spec = importlib.util.spec_from_file_location("ccg_task_router_admission", router_path)
+        if spec is None or spec.loader is None:
+            raise ContractError("CCG task router is unavailable")
+        router = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = router
+        spec.loader.exec_module(router)
+        result = router.coding_decision(root, task_dir, target_revision=decision.target_revision)
+        record = result["decision"]
+        expected = {
+            "targetId": decision.target_id,
+            "targetRevision": decision.target_revision,
+            "targetDigest": decision.target_digest,
+            "domainDecisionRef": decision.domain_decision_ref,
+            "implementer": {"subject": decision.implementer.subject, "executionRef": decision.implementer.execution_ref},
+            "reviewer": {"subject": decision.reviewer.subject, "executionRef": decision.reviewer.execution_ref},
+            "reviewerPolicy": {"id": decision.reviewer_policy.policy_id, "revision": decision.reviewer_policy.revision,
+                               "digest": decision.reviewer_policy.digest,
+                               "independenceClass": decision.reviewer_policy.independence_class},
+            "executionTargetRef": decision.execution_target_ref,
+        }
+        canonical_task_dir = str(Path(task_dir).resolve())
+        if (result.get("taskDir") != canonical_task_dir or result.get("taskId") != task_id
+                or Path(canonical_task_dir).name != task_id):
+            raise ContractError("frozen decision locator does not identify its canonical task")
+        if any(record.get(key) != value for key, value in expected.items()):
+            raise ContractError("coding decision does not match the frozen CCG allocation")
+    except ContractError:
+        raise
+    except Exception as error:
+        raise ContractError(f"frozen CCG decision lookup failed: {error}") from error
+
+
 @dataclass(frozen=True)
 class CodingTargetDecision:
     """An immutable CCG-owned decision; it intentionally contains no verdict."""
@@ -375,6 +419,7 @@ def build_coding_admission_request(
     execution_target_ref: str,
     personal: PersonalAdmissionContext,
     material: PersonalRuntimeCommitMaterial,
+    frozen_decision_locator: Mapping[str, object],
     deep_link: str | None = None,
 ) -> dict[str, object]:
     """Build one wire request from CCG facts and independent leaf receipts.
@@ -395,6 +440,7 @@ def build_coding_admission_request(
     )
     request: dict[str, object] = {
         "schemaVersion": CODING_ADMISSION_REQUEST_SCHEMA_VERSION,
+        "frozenDecisionLocator": dict(frozen_decision_locator),
         "requestId": _nonblank(request_id, "admission request_id"),
         "target": {
             "targetId": target_id,
@@ -979,6 +1025,7 @@ def execute_coding_admission(
         "reviewAttestation",
         "personal",
         "commitMaterial",
+        "frozenDecisionLocator",
     }, "coding admission request", optional={"deepLink"})
     if raw_request.get("schemaVersion") != CODING_ADMISSION_REQUEST_SCHEMA_VERSION:
         raise ContractError("coding admission request schemaVersion is unsupported")
@@ -1000,6 +1047,8 @@ def execute_coding_admission(
         ),
         execution_target_ref=target_value.get("executionTargetRef"),
     )
+    locator = _record(raw_request.get("frozenDecisionLocator"), "frozenDecisionLocator")
+    require_frozen_coding_decision(locator, decision)
 
     attestation_value = _record(raw_request.get("reviewAttestation"), "reviewAttestation")
     _exact_keys(attestation_value, {

@@ -69,7 +69,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: 2Red1Blue/personal-runtime
-          ref: ce73b4fcb0d7f9b7f23284f44f58d06e1cee11f4
+          ref: 2d9cdea5a0d0a93f37fc8c495e1d6bf15363556b
           path: .qualification/personal-runtime
 
       - uses: pnpm/action-setup@v4

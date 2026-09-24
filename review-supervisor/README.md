@@ -27,8 +27,14 @@ CCG_PR_ADMISSION_TOKEN='provisioned-local-token' \
   --input coding-admission.json
 ```
 
-The input freezes `CodingTargetDecision`, the exact reviewer attestation,
-Personal Runtime context and immutable execution input under
+The input must include a `frozenDecisionLocator` with the canonical CCG
+`root`, `taskDir`, and `taskId`. Before opening the socket, the command reads
+the exact target revision through `ccg_task_router.coding_decision` under the
+project-root lock and compares every decision fact, including worker subjects
+and execution references, reviewer policy, and execution target. Self-consistent
+caller-generated revisions, missing allocations, and cross-task locators fail
+closed. The request freezes `CodingTargetDecision`, the exact reviewer
+attestation, Personal Runtime context and immutable execution input under
 `ccg.coding-admission-request.v1`. The command rejects implementer/reviewer
 identity reuse and reviewer substitution before opening the socket. The verified
 target digest covers the immutable worker, reviewer-policy, and execution-target
@@ -45,8 +51,9 @@ The supervisor can connect this consumer to the real dual-leaf review path with
 `review --coding-admission-config <path>` (or
 `CCG_CODING_ADMISSION_CONFIG`). The JSON file contains only `admission` (`socket`,
 `tokenEnv`, optional `timeoutMs`) and `request` context (`targetId`,
-`targetRevision`, `reviewerPolicy`, `executionTargetRef`, `implementerReceipt`,
-`personal`, and `commitMaterial`). The supervisor reads and parses that file
+`reviewerPolicy`, `executionTargetRef`, `implementerReceipt`,
+`frozenDecisionLocator` (`root`, `taskDir`, `taskId`), `personal`, and
+`commitMaterial`). The supervisor reads and parses that file
 exactly once, derives the reviewer execution reference from the current
 review-leaf terminal receipt, and calls this module's existing
 `execute_coding_admission` only after both leaves finish with `APPROVE`. Both
@@ -57,6 +64,17 @@ opens. Precomputed digests, target worker identities, reviewer attestations, PR
 state, and Fabric requests are rejected from the config, as is an in-file
 `enabled` flag — admission is only ever skipped with the explicit
 `--disable-coding-admission` switch, never silently.
+
+After both leaves approve, the CCG supervisor derives their terminal execution
+references and allocates the complete immutable decision under the canonical
+task's root lock. The router assigns the next task-local `targetRevision`; the
+config cannot choose it. Before opening the PR socket, the supervisor reads the
+allocation back through the CCG owner API and verifies every decision field.
+The allocation ID is derived from the complete decision input, including the
+actual leaf execution reference, so retries that reuse the same leaf receipts
+replay the same allocation and admission command. A new review execution gets
+a new immutable revision. Missing tasks, identity conflicts, and unallocated
+or tampered records fail before PR I/O.
 
 The admission command ID is a pure function of the immutable CCG decision, so a
 retry that reuses the same leaf receipts resubmits the identical command and

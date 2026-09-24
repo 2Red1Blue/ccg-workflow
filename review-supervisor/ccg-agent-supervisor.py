@@ -783,7 +783,7 @@ def parse_coding_admission_config(raw: bytes) -> dict[str, Any]:
             raise ValueError(f"coding admission config requires admission.{key}")
     required_request = (
         "targetId",
-        "targetRevision",
+        "frozenDecisionLocator",
         "reviewerPolicy",
         "executionTargetRef",
         "implementerReceipt",
@@ -818,6 +818,7 @@ def parse_coding_admission_config(raw: bytes) -> dict[str, Any]:
     )
     nested_fields = (
         (request["reviewerPolicy"], {"id", "revision", "digest", "independenceClass"}, "reviewerPolicy"),
+        (request["frozenDecisionLocator"], {"root", "taskDir", "taskId"}, "frozenDecisionLocator"),
         (
             request["personal"],
             {
@@ -923,6 +924,7 @@ def execute_review_coding_admission(
 
     from ccg_coding_domain import (
         ContractError,
+        CodingTargetDecision,
         PersonalAdmissionContext,
         PersonalRuntimeAdmissionSocketPort,
         PersonalRuntimeCommitMaterial,
@@ -931,9 +933,10 @@ def execute_review_coding_admission(
         build_coding_admission_request,
         coding_admission_command_id,
         coding_domain_decision_ref,
-        coding_target_digest,
+        require_frozen_coding_decision,
         execute_coding_admission,
     )
+    from ccg_task_router import TaskRouterError, coding_decision
 
     implementer_subject, implementer_execution, implementer_digest = _implementer_receipt(
         request_config["implementerReceipt"]
@@ -999,16 +1002,55 @@ def execute_review_coding_admission(
         material_value.get("resolutionReason"),
     )
     target_id = request_config.get("targetId")
-    target_revision = request_config.get("targetRevision")
     execution_target_ref = request_config.get("executionTargetRef")
-    target_digest = coding_target_digest(
-        target_id,
-        target_revision,
-        implementer,
-        reviewer,
-        reviewer_policy,
-        execution_target_ref,
+    if implementer.subject == reviewer.subject or implementer.execution_ref == reviewer.execution_ref:
+        raise ContractError("actual reviewer must be independent from the CCG implementer")
+    locator = request_config["frozenDecisionLocator"]
+    allocation_facts = {
+        "targetId": target_id,
+        "implementer": {"subject": implementer.subject, "executionRef": implementer.execution_ref},
+        "reviewer": {"subject": reviewer.subject, "executionRef": reviewer.execution_ref},
+        "reviewerPolicy": {
+            "id": reviewer_policy.policy_id,
+            "revision": reviewer_policy.revision,
+            "digest": reviewer_policy.digest,
+            "independenceClass": reviewer_policy.independence_class,
+        },
+        "executionTargetRef": execution_target_ref,
+    }
+    allocation_id = "review:" + hashlib.sha256(
+        json.dumps(allocation_facts, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    try:
+        allocated = coding_decision(
+            locator["root"], locator["taskDir"], allocation_id=allocation_id,
+            target_id=target_id,
+            implementer_subject=implementer.subject,
+            implementer_execution_ref=implementer.execution_ref,
+            reviewer_subject=reviewer.subject,
+            reviewer_execution_ref=reviewer.execution_ref,
+            policy_id=reviewer_policy.policy_id,
+            policy_revision=reviewer_policy.revision,
+            policy_digest=reviewer_policy.digest,
+            independence_class=reviewer_policy.independence_class,
+            execution_target_ref=execution_target_ref,
+        )
+    except TaskRouterError as error:
+        raise ContractError(f"CCG task decision allocation failed: {error}") from error
+    record = allocated["decision"]
+    target_revision = record["targetRevision"]
+    target_digest = record["targetDigest"]
+    decision = CodingTargetDecision(
+        target_id=record["targetId"],
+        target_revision=target_revision,
+        target_digest=target_digest,
+        domain_decision_ref=record["domainDecisionRef"],
+        implementer=implementer,
+        reviewer=reviewer,
+        reviewer_policy=reviewer_policy,
+        execution_target_ref=execution_target_ref,
     )
+    require_frozen_coding_decision(locator, decision)
     # The command ID is the immutable decision's own identity.  A retry that
     # reuses the same receipts therefore resubmits the same command instead of
     # inventing a new one from the retry's run ID.
@@ -1046,6 +1088,7 @@ def execute_review_coding_admission(
         execution_target_ref=execution_target_ref,
         personal=personal,
         material=material,
+        frozen_decision_locator=request_config["frozenDecisionLocator"],
         deep_link=request_config.get("deepLink"),
     )
     token_env = admission["tokenEnv"]

@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-PERSONAL_RUNTIME_COMMIT = "ce73b4fcb0d7f9b7f23284f44f58d06e1cee11f4"
+PERSONAL_RUNTIME_COMMIT = "2d9cdea5a0d0a93f37fc8c495e1d6bf15363556b"
 ROOT = Path(__file__).resolve().parents[1]
 DOMAIN_PATH = ROOT / "review-supervisor" / "ccg_coding_domain.py"
 OWNER_PROBE_PATH = (
@@ -112,7 +112,38 @@ def _request(domain) -> dict[str, object]:
             "resolutionReason": "CCG exact-pin qualification target",
         },
         "deepLink": "codex://ccg/exact-pin-probe",
-    }
+}
+
+
+def _allocate_frozen_decision(domain, request: dict[str, object], root: Path) -> dict[str, str]:
+    """Create one isolated CCG task and allocate the exact decision used by PR admission."""
+    router_path = ROOT / "review-supervisor" / "ccg_task_router.py"
+    spec = importlib.util.spec_from_file_location("ccg_task_router_qualifier", router_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load CCG task router")
+    router = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = router
+    spec.loader.exec_module(router)
+    resolution, task_dir = router.create_task(str(root), "Admission qualification", "admission-qualification", {})
+    target = request["target"]
+    record = router.coding_decision(
+        str(root), str(task_dir), allocation_id="personal-runtime-qualifier",
+        target_id=target["targetId"],
+        implementer_subject=target["implementer"]["subject"],
+        implementer_execution_ref=target["implementer"]["executionRef"],
+        reviewer_subject=target["reviewer"]["subject"],
+        reviewer_execution_ref=target["reviewer"]["executionRef"],
+        policy_id=target["reviewerPolicy"]["id"],
+        policy_revision=target["reviewerPolicy"]["revision"],
+        policy_digest=target["reviewerPolicy"]["digest"],
+        independence_class=target["reviewerPolicy"]["independenceClass"],
+        execution_target_ref=target["executionTargetRef"],
+    )["decision"]
+    if record["targetRevision"] != target["targetRevision"]:
+        raise AssertionError("allocated CCG target revision differs from the admission request")
+    locator = {"root": resolution["root"], "taskDir": str(task_dir), "taskId": resolution["taskId"]}
+    request["frozenDecisionLocator"] = locator
+    return locator
 
 
 def _run_cli(input_path: Path, socket_path: Path, token: str) -> subprocess.CompletedProcess[str]:
@@ -173,6 +204,9 @@ def main() -> int:
         database_path = directory / "runtime.sqlite"
         socket_path = directory / "admission.sock"
         token_path = directory / "token"
+        ccg_root = directory / "ccg"
+        ccg_root.mkdir(mode=0o700)
+        _allocate_frozen_decision(domain, request, ccg_root)
         input_path.write_text(
             json.dumps(request, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",

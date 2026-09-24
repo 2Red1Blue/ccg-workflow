@@ -34,6 +34,22 @@ the full history to agree, so a failed second write or partial history edit
 stays fail-closed. The sidecar stores no decision history and is not a second
 revision ledger or a cross-task sequence. External deletion or rollback of
 both task.json and its sidecar remains outside what this file authority can detect.
+Both admission entry points require a concrete locator containing the canonical
+CCG root, task directory, and task ID. They read the requested revision through
+`ccg_task_router.coding_decision` while it holds the existing root lock, then
+compare target ID/revision/digest/reference, both worker subjects and execution
+references, reviewer policy, and execution target before opening the Personal
+Runtime socket. A valid digest alone does not establish that a revision was
+allocated. A missing revision or locator mismatch fails closed; there is no
+legacy request fallback. The supervisor allocates its decision after both
+review leaves approve, when the actual reviewer execution reference (leaf run
+ID plus report digest) exists. It asks the CCG task router to allocate the next
+task-local revision from those exact facts, then reads that record back before
+admission. The allocation ID is a digest of the complete decision input, so a
+retry that reuses the source leaf receipts gets the same decision and command;
+a new leaf execution gets a new immutable revision. The direct CCG CLI and
+isolated qualifier continue to use an already allocated exact record.
+
 The other systems may retain `domainDecisionRef` but must not rerun the policy
 or store a CCG review verdict.
 
@@ -103,7 +119,7 @@ alter the target, receipt, observation, action, or projection.
   builder supports the exact integer JSON subset and rejects floats instead of
   guessing at ECMAScript number serialization. Its parity and service path are
   gated against clean exact pin
-  `ce73b4fcb0d7f9b7f23284f44f58d06e1cee11f4`; the builder should move to a
+  `2d9cdea5a0d0a93f37fc8c495e1d6bf15363556b`; the builder should move to a
   published Personal Runtime client seam when that seam exists.
 - The review-supervisor installer deploys this module as a private support file
   and as the executable `ccg-coding-domain` consumer. The npm package exposes

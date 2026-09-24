@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -559,11 +560,7 @@ def _decision_history(resolution: Dict[str, str], data: Dict[str, Any]) -> Tuple
         if head_present:
             raise TaskRouterError("INVALID_CODING_DECISION_HEAD: no history matches stored head")
     else:
-        expected_head = {
-            "lastRevision": validated[-1]["targetRevision"],
-            "lastTargetDigest": validated[-1]["targetDigest"],
-            "lastDomainDecisionRef": validated[-1]["domainDecisionRef"],
-        }
+        expected_head = _decision_head(validated)
         if head != expected_head:
             raise TaskRouterError("INVALID_CODING_DECISION_HEAD: stored head does not match full history")
     return namespace, validated
@@ -577,6 +574,9 @@ def _decision_head(history: list) -> Optional[Dict[str, str]]:
         "lastRevision": last["targetRevision"],
         "lastTargetDigest": last["targetDigest"],
         "lastDomainDecisionRef": last["domainDecisionRef"],
+        "historyDigest": hashlib.sha256(
+            json.dumps(history, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
     }
 
 
@@ -600,7 +600,7 @@ def _validate_decision_fence(task_dir: Path, history: list) -> None:
     except (TaskRouterError, ValueError, UnicodeError) as exc:
         raise TaskRouterError("INVALID_CODING_DECISION_FENCE: %s" % exc)
     if not isinstance(actual, dict) or set(actual) != {
-        "lastRevision", "lastTargetDigest", "lastDomainDecisionRef",
+        "lastRevision", "lastTargetDigest", "lastDomainDecisionRef", "historyDigest",
     } or actual != expected:
         raise TaskRouterError("INVALID_CODING_DECISION_FENCE: fence does not match task history")
 
@@ -703,12 +703,8 @@ def coding_decision(root_path: str, task_path: str, *, allocation_id: Optional[s
             "domainDecisionRef": decision.domain_decision_ref,
         }
         namespace["codingTargetDecisions"].append(record)
-        namespace["codingTargetDecisionHead"] = {
-            "lastRevision": revision,
-            "lastTargetDigest": decision.target_digest,
-            "lastDomainDecisionRef": decision.domain_decision_ref,
-        }
-        _atomic_write_json(_decision_fence_path(task_dir), _decision_head([record]))
+        namespace["codingTargetDecisionHead"] = _decision_head(namespace["codingTargetDecisions"])
+        _atomic_write_json(_decision_fence_path(task_dir), namespace["codingTargetDecisionHead"])
         _atomic_write_json(task_dir / "task.json", data)
         return {"taskDir": str(task_dir), "taskId": data["id"], "decision": record, "replayed": False}
 
@@ -775,7 +771,7 @@ def _selected_root(args: argparse.Namespace) -> str:
             raise TaskRouterError("WORKSPACE_ROOT_REQUIRED")
         return args.workspace_root
     if not args.project_root:
-        if args.command in ("write", "update"):
+        if args.command in ("write", "update", "allocate", "read"):
             return _root_from_task_path(args.task_dir)
         raise TaskRouterError("PROJECT_ROOT_REQUIRED")
     return args.project_root

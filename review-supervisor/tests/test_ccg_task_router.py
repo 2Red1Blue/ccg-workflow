@@ -308,6 +308,76 @@ class TaskRouterTest(unittest.TestCase):
                     {issue["code"] for issue in json.loads(report.stdout)["issues"]},
                 )
 
+    def test_full_history_fence_rejects_resealed_allocation_id_and_non_tail_edits(self):
+        for edit in ("allocation-id", "non-tail-decision"):
+            with self.subTest(edit=edit), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                task_dir = self.create_fixture(root)
+                for allocation in ("first", "second"):
+                    allocated = self.run_router(root, *self.allocate_args(task_dir, allocation))
+                    self.assertEqual(0, allocated.returncode, allocated.stderr)
+                metadata_path = task_dir / "task.json"
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                namespace = metadata["ccg"]
+                records = namespace["codingTargetDecisions"]
+                if edit == "allocation-id":
+                    records[0]["allocationId"] = "edited-first"
+                else:
+                    record = records[0]
+                    implementer_data = record["implementer"]
+                    reviewer_data = record["reviewer"]
+                    policy_data = record["reviewerPolicy"]
+                    implementer = ROUTER.coding_domain.WorkerRef(
+                        implementer_data["subject"], implementer_data["executionRef"]
+                    )
+                    reviewer = ROUTER.coding_domain.WorkerRef(
+                        reviewer_data["subject"], reviewer_data["executionRef"]
+                    )
+                    policy = ROUTER.coding_domain.ReviewerPolicy(
+                        policy_data["id"], policy_data["revision"], policy_data["digest"],
+                        policy_data["independenceClass"],
+                    )
+                    record["executionTargetRef"] = "personal-runtime:edited-target"
+                    digest = ROUTER.coding_domain.coding_target_digest(
+                        record["targetId"], record["targetRevision"], implementer, reviewer,
+                        policy, record["executionTargetRef"],
+                    )
+                    record["targetDigest"] = digest
+                    record["domainDecisionRef"] = ROUTER.coding_domain.coding_domain_decision_ref(digest)
+                normalized = [
+                    ROUTER._decision_from_record(record, "r%d" % index)
+                    for index, record in enumerate(records, 1)
+                ]
+                namespace["codingTargetDecisionHead"] = ROUTER._decision_head(normalized)
+                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                for result in (
+                    self.run_router(root, "read", "--task-dir", str(task_dir)),
+                    self.run_router(root, *self.allocate_args(task_dir, "third")),
+                ):
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn("INVALID_CODING_DECISION_FENCE", result.stderr)
+                report = self.run_router(root, "doctor")
+                self.assertEqual(2, report.returncode)
+                self.assertIn("CODING_DECISION_FENCE_MISMATCH", {
+                    issue["code"] for issue in json.loads(report.stdout)["issues"]
+                })
+
+    def test_template_allocate_and_read_commands_derive_project_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task_dir = self.create_fixture(root)
+            allocate_args = self.allocate_args(task_dir)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), *allocate_args], text=True, capture_output=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            read = subprocess.run(
+                [sys.executable, str(SCRIPT), "read", "--task-dir", str(task_dir)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(0, read.returncode, read.stderr)
+            self.assertEqual("r1", json.loads(read.stdout)["decisions"][0]["targetRevision"])
+
     def test_sidecar_first_write_failure_is_fail_closed_and_doctor_reports(self):
         for provider in ("ccg", "trellis"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:
