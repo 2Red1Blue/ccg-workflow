@@ -9,7 +9,6 @@ const execFileAsync = promisify(execFile)
 const roots: string[] = []
 const hookSource = process.env.CCG_GUARDRAIL_PATH || join(process.cwd(), 'templates', 'hooks', 'adaptive-guardrail.js')
 const taskUtilsSource = join(process.cwd(), 'templates', 'hooks', 'task-utils.js')
-const skillRouterSource = join(process.cwd(), 'templates', 'hooks', 'skill-router.js')
 const codexHook = process.env.CCG_CODEX_GUARDRAIL_PATH || join(process.cwd(), 'templates', 'codex', 'hooks', 'ccg-workflow.py')
 const python = process.platform === 'win32' ? 'python' : 'python3'
 
@@ -21,7 +20,6 @@ async function fixture(complexity: 'S' | 'M' | 'L', phase = 'implementation') {
   await mkdir(join(root, 'hooks'), { recursive: true })
   await copyFile(hookSource, join(root, 'hooks', 'adaptive-guardrail.js'))
   await copyFile(taskUtilsSource, join(root, 'hooks', 'task-utils.js'))
-  await copyFile(skillRouterSource, join(root, 'hooks', 'skill-router.js'))
   await writeFile(join(root, '.ccg', 'tasks', 'current', 'task.json'), JSON.stringify({
     id: 'current', status: 'in_progress', complexity, currentPhase: phase, risk: 'low',
   }))
@@ -54,23 +52,6 @@ async function runCodexHook(root: string, message: string): Promise<string> {
     const child = spawn(python, [codexHook], {
       cwd: root,
       env: { ...process.env, CODEX_PROJECT_DIR: root },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', chunk => { stdout += chunk })
-    child.stderr.on('data', chunk => { stderr += chunk })
-    child.on('error', reject)
-    child.on('close', (code) => code === 0 ? resolve(stdout) : reject(new Error(stderr)))
-    child.stdin.end(JSON.stringify({ message }))
-  })
-}
-
-async function runSkillRouter(root: string, message: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('node', [join(root, 'hooks', 'skill-router.js')], {
-      cwd: root,
-      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let stdout = ''
@@ -134,14 +115,6 @@ describe('adaptive review guardrail', () => {
     await writeFile(join(root, 'README.md'), '# Notes\n')
     expect(await runHook(root, '准备交付')).toBe('')
     expect(await runHook(root, '请审查当前改动')).toContain('用户明确请求审查')
-  })
-
-  it('routes an explicit dual review through the persisted supervisor', async () => {
-    const root = await fixture('S')
-    const output = await runSkillRouter(root, '请双模型审查当前代码')
-    expect(output).toContain('ccg-agent-supervisor')
-    expect(output).toContain('review --workdir')
-    expect(output).not.toContain('codeagent-wrapper')
   })
 
   it('keeps the single Codex hook quiet for small work and opens the same gate for a qualifying delivery', async () => {

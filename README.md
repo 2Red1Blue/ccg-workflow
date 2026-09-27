@@ -133,18 +133,16 @@ Simple tasks run fast with zero overhead. Complex tasks get the full engine.
 
 ## Core Features
 
-### Hook Engine — Never Lose Context
+### Hook Engine
 
-4 JavaScript hooks inject state into every Claude Code session:
+Two JavaScript hooks are registered for Claude Code:
 
 | Hook | Event | What it does |
 |------|-------|-------------|
 | `workflow-state.js` | Every turn | Injects current task state as breadcrumb |
-| `session-start.js` | Session start/compact | Re-injects full project context |
-| `subagent-context.js` | Agent/Bash spawn | Injects spec directly into subagent prompts |
-| `skill-router.js` | Every turn | Auto-injects domain knowledge by keyword |
+| `adaptive-guardrail.js` | User prompt at review/delivery | Injects a review gate when its criteria are met |
 
-Context survives compaction. Sub-agents born with spec in their prompt. Zero state loss.
+Task state is stored on disk. Domain files and model workflows are available for explicit use without keyword-triggered injection.
 
 ### Task System — Persistent Lifecycle
 
@@ -172,7 +170,7 @@ Medium+ complexity tasks get a persistent directory:
 
 ### 100+ Domain Knowledge Files
 
-When your message mentions security, caching, RAG, Kubernetes, etc., the relevant knowledge file is auto-injected. 10 domains, 61 files:
+Domain knowledge files are available for explicit use. Mentioning a keyword does not inject their contents. 10 domains, 61 files:
 
 `Security` · `Architecture` · `DevOps` · `AI/MLOps` · `Development` · `Frontend Design` · `Infrastructure` · `Mobile` · `Data Engineering` · `Orchestration`
 

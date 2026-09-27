@@ -1089,11 +1089,10 @@ async function installEngineFiles(ctx: InstallContext): Promise<void> {
 // CCG 3.0 Hook installation
 // ═══════════════════════════════════════════════════════
 
-// One Claude Code event is enough. SessionStart and PreToolUse used to inject
-// on every session/tool call without ever creating a review record. Existing
-// UserPromptSubmit state and explicit skill-routing behavior remains intact.
-const HOOK_FILES = ['task-utils.js', 'adaptive-guardrail.js', 'workflow-state.js', 'skill-router.js']
-const RETIRED_HOOK_FILES = ['session-start.js', 'subagent-context.js']
+// CCG registers only task state and the delivery review gate on UserPromptSubmit.
+const HOOK_FILES = ['task-utils.js', 'adaptive-guardrail.js', 'workflow-state.js']
+// Keep retired template bytes stable so installs can remove only stock copies, not user edits.
+const RETIRED_HOOK_FILES = ['session-start.js', 'subagent-context.js', 'skill-router.js']
 const CCG_HOOK_FILES = new Set([...HOOK_FILES, ...RETIRED_HOOK_FILES])
 
 /**
@@ -1165,7 +1164,6 @@ export function mergeCcgHooks(settings: Record<string, any>, hooksDir: string): 
     hooks: [
       { type: 'command', command: `node ${shellQuote(join(hooksDir, 'adaptive-guardrail.js'))}`, timeout: 10000 },
       { type: 'command', command: `node ${shellQuote(join(hooksDir, 'workflow-state.js'))}`, timeout: 10000 },
-      { type: 'command', command: `node ${shellQuote(join(hooksDir, 'skill-router.js'))}`, timeout: 5000 },
     ],
   }
   hooks.UserPromptSubmit = [...(hooks.UserPromptSubmit || []), ccgCommands]

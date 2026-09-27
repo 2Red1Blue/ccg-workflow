@@ -12,6 +12,7 @@ describe('mergeCcgHooks', () => {
         UserPromptSubmit: [
           { hooks: [
             { type: 'command', command: 'node /Users/test/.claude/hooks/ccg/workflow-state.js' },
+            { type: 'command', command: 'node /Users/test/.claude/hooks/ccg/skill-router.js' },
             { type: 'command', command: 'node /opt/combined-user-hook.js' },
           ] },
           { hooks: [{ type: 'command', command: 'node /opt/user-hook.js' }] },
@@ -35,9 +36,18 @@ describe('mergeCcgHooks', () => {
     expect(merged.hooks.UserPromptSubmit[2].hooks).toEqual([
       { type: 'command', command: "node '/Users/test/.claude/hooks/ccg/adaptive-guardrail.js'", timeout: 10000 },
       { type: 'command', command: "node '/Users/test/.claude/hooks/ccg/workflow-state.js'", timeout: 10000 },
-      { type: 'command', command: "node '/Users/test/.claude/hooks/ccg/skill-router.js'", timeout: 5000 },
     ])
     expect(mergeCcgHooks(JSON.parse(JSON.stringify(merged)), '/Users/test/.claude/hooks/ccg')).toEqual(merged)
+  })
+})
+
+describe('CCG domain skill guidance', () => {
+  it('keeps domain references on demand instead of routing by keywords', async () => {
+    const rule = await fs.readFile(join(process.cwd(), 'templates', 'rules', 'ccg-skill-routing.md'), 'utf8')
+
+    expect(rule).toContain('A keyword or topic mention alone must not trigger reading or including a domain file.')
+    expect(rule).toContain('Load a domain reference only when the user explicitly asks for that skill')
+    expect(rule).not.toMatch(/trigger keywords below|automatically READ/iu)
   })
 })
 

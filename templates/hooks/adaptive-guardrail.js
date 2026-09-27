@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // CCG Adaptive Review Guardrail — UserPromptSubmit
 //
-// This is intentionally the only CCG hook registered for Claude Code.  It is
-// quiet while work is in progress and asks for a persisted dual-model review
+// This hook is quiet while work is in progress and asks for a persisted dual-model review
 // only at a meaningful review/delivery boundary.  It never starts a reviewer
 // process itself: a hook must not turn every edit into an expensive background
 // job or race the agent that is still writing the change.

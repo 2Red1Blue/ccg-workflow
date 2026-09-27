@@ -308,6 +308,70 @@ describe('installWorkflows — binary installation', () => {
 })
 
 // ─────────────────────────────────────────────────────────────
+// F2. Retired hook migration
+// ─────────────────────────────────────────────────────────────
+// The public installer downloads its Windows executable when one is absent.
+// This hook migration does not need that platform-specific release artifact.
+describe.skipIf(process.platform === 'win32')('installWorkflows — retired skill-router hook', () => {
+  const tmpDir = join(tmpdir(), `ccg-test-retired-hook-${Date.now()}`)
+  const hooksDir = join(tmpDir, 'hooks', 'ccg')
+  const templateHooksDir = join(PACKAGE_ROOT, 'templates', 'hooks')
+  const legacyHook = 'skill-router.js'
+
+  async function seedCurrentBinary(installDir: string): Promise<void> {
+    const binDir = join(installDir, 'bin')
+    const binaryPath = join(binDir, 'codeagent-wrapper')
+    await fs.ensureDir(binDir)
+    await fs.writeFile(binaryPath, '#!/bin/sh\necho "codeagent-wrapper version 5.16.0"\n')
+    await fs.chmod(binaryPath, 0o755)
+  }
+
+  afterAll(async () => {
+    await fs.remove(tmpDir)
+  })
+
+  it('removes the unchanged legacy hook and registers only current hooks', async () => {
+    await fs.ensureDir(hooksDir)
+    await fs.copyFile(join(templateHooksDir, legacyHook), join(hooksDir, legacyHook))
+    await seedCurrentBinary(tmpDir)
+
+    const result = await installWorkflows(['workflow'], tmpDir, true, { mcpProvider: 'skip' })
+
+    expect(result.success).toBe(true)
+    expect(await fs.pathExists(join(hooksDir, legacyHook))).toBe(false)
+
+    const settings = await fs.readJson(join(tmpDir, 'settings.json'))
+    const commands = settings.hooks.UserPromptSubmit
+      .flatMap((entry: { hooks?: Array<{ command?: string }> }) => entry.hooks || [])
+      .map((hook: { command?: string }) => hook.command)
+      .filter((command: string | undefined) => command?.replace(/\\/g, '/').includes('/hooks/ccg/'))
+    expect(commands).toHaveLength(2)
+    expect(commands.join('\n')).toContain('adaptive-guardrail.js')
+    expect(commands.join('\n')).toContain('workflow-state.js')
+    expect(commands.join('\n')).not.toContain(legacyHook)
+  }, 30_000)
+
+  it('preserves a modified legacy hook', async () => {
+    const modifiedDir = `${tmpDir}-modified`
+    const modifiedHooksDir = join(modifiedDir, 'hooks', 'ccg')
+    const modifiedContents = '// user customization\n'
+    try {
+      await fs.ensureDir(modifiedHooksDir)
+      await fs.writeFile(join(modifiedHooksDir, legacyHook), modifiedContents)
+      await seedCurrentBinary(modifiedDir)
+
+      const result = await installWorkflows(['workflow'], modifiedDir, true, { mcpProvider: 'skip' })
+
+      expect(result.success).toBe(true)
+      expect(await fs.readFile(join(modifiedHooksDir, legacyHook), 'utf-8')).toBe(modifiedContents)
+    }
+    finally {
+      await fs.remove(modifiedDir)
+    }
+  }, 30_000)
+})
+
+// ─────────────────────────────────────────────────────────────
 // G. Prompts installation
 // ─────────────────────────────────────────────────────────────
 describe('installWorkflows — prompts installation', () => {
