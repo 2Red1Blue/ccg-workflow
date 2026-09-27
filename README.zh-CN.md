@@ -261,7 +261,7 @@ npx ccg-workflow diagnose-mcp             # 诊断 MCP 问题
 ```
 ~/.claude/
 ├── commands/ccg/          # 斜杠命令
-├── hooks/ccg/             # Hook 脚本（5 个文件）
+├── hooks/ccg/             # 两个已注册 Hook + 共用 task-utils 辅助脚本
 ├── skills/ccg/            # 质量关卡 + 100+ 域知识
 ├── rules/                 # 自动触发规则
 ├── .ccg/

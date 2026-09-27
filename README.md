@@ -261,7 +261,7 @@ npx ccg-workflow diagnose-mcp             # Diagnose MCP issues
 ```
 ~/.claude/
 ├── commands/ccg/          # Slash commands
-├── hooks/ccg/             # Hook scripts (5 files)
+├── hooks/ccg/             # Two registered hooks + shared task-utils helper
 ├── skills/ccg/            # Quality gates + 100+ domain knowledge
 ├── rules/                 # Auto-trigger rules
 ├── .ccg/
