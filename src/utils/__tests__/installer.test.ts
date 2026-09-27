@@ -316,6 +316,7 @@ describe.skipIf(process.platform === 'win32')('installWorkflows — retired skil
   const tmpDir = join(tmpdir(), `ccg-test-retired-hook-${Date.now()}`)
   const hooksDir = join(tmpDir, 'hooks', 'ccg')
   const templateHooksDir = join(PACKAGE_ROOT, 'templates', 'hooks')
+  const retiredFixturesDir = join(PACKAGE_ROOT, 'src', 'utils', '__tests__', 'fixtures', 'retired-hooks')
   const legacyHook = 'skill-router.js'
 
   async function seedCurrentBinary(installDir: string): Promise<void> {
@@ -367,6 +368,39 @@ describe.skipIf(process.platform === 'win32')('installWorkflows — retired skil
     }
     finally {
       await fs.remove(modifiedDir)
+    }
+  }, 30_000)
+
+  it('removes historical stock hooks and preserves malformed settings.json', async () => {
+    const historicalDir = `${tmpDir}-historical`
+    const historicalHooksDir = join(historicalDir, 'hooks', 'ccg')
+    const settingsPath = join(historicalDir, 'settings.json')
+    const malformedSettings = Buffer.from([
+      '{ "hooks": { "UserPromptSubmit": ["~/.claude/hooks/ccg/skill-router.js",',
+      '"~/.claude/hooks/ccg/session-start.js", "~/.claude/hooks/ccg/subagent-context.js" ]',
+    ].join('\n'))
+
+    try {
+      await fs.ensureDir(historicalHooksDir)
+      for (const hook of ['skill-router', 'session-start', 'subagent-context']) {
+        await fs.copyFile(
+          join(retiredFixturesDir, `${hook}.c88c4c08.js`),
+          join(historicalHooksDir, `${hook}.js`),
+        )
+      }
+      await seedCurrentBinary(historicalDir)
+      await fs.writeFile(settingsPath, malformedSettings)
+
+      const result = await installWorkflows(['workflow'], historicalDir, true, { mcpProvider: 'skip' })
+
+      expect(result.errors.some(error => error.includes('settings.json is not valid JSON'))).toBe(true)
+      for (const hook of ['skill-router.js', 'session-start.js', 'subagent-context.js']) {
+        expect(await fs.pathExists(join(historicalHooksDir, hook)), `${hook} should be removed`).toBe(false)
+      }
+      expect(await fs.readFile(settingsPath)).toEqual(malformedSettings)
+    }
+    finally {
+      await fs.remove(historicalDir)
     }
   }, 30_000)
 })

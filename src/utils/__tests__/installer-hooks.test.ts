@@ -77,6 +77,7 @@ describe('registerHooksInSettingsFile', () => {
     const failure = await registerHooksInSettingsFile(settingsPath, hooksDir)
 
     expect(failure).toContain('is not valid JSON')
+    expect(failure).toContain('rerun CCG install to complete hook migration')
     expect(await fs.readFile(settingsPath, 'utf8')).toBe(broken)
   })
 

@@ -1093,6 +1093,21 @@ async function installEngineFiles(ctx: InstallContext): Promise<void> {
 const HOOK_FILES = ['task-utils.js', 'adaptive-guardrail.js', 'workflow-state.js']
 // Keep retired template bytes stable so installs can remove only stock copies, not user edits.
 const RETIRED_HOOK_FILES = ['session-start.js', 'subagent-context.js', 'skill-router.js']
+// SHA-256 digests of stock retired hook versions shipped before the current template.
+const RETIRED_HOOK_STOCK_SHA256: Readonly<Record<string, readonly string[]>> = {
+  'session-start.js': [
+    '3f59106dfd3862312c4d4112dadd369450f907f425cca350f0a80582787e3d3f',
+  ],
+  'subagent-context.js': [
+    'aa94e8dec287dd1086dc10f89238673abc77542d6fe3eb8ceba9a4c12de0234e',
+    '647d7adb1d58e3e7331189d7097d2b3e44a6a5fa584365be375cddbd93fb993b',
+  ],
+  'skill-router.js': [
+    'bd2a919e57efd79596d3a6dde4a2f22abb807239f9b2a026ee2ac98e91de16b5',
+    '60ac6f1fb0d6cecac7f071937fe16d71d8a6c37269998d4b48fd3e50115ee721',
+    '7cbe7b6f38d63fbd01fe88af996c6083319b64c7fb5f2524db17b86b50ab5db4',
+  ],
+}
 const CCG_HOOK_FILES = new Set([...HOOK_FILES, ...RETIRED_HOOK_FILES])
 
 /**
@@ -1119,7 +1134,13 @@ async function installHookScripts(ctx: InstallContext): Promise<void> {
       const source = join(hooksSrcDir, file)
       const destination = join(hooksDestDir, file)
       if (!(await fs.pathExists(source)) || !(await fs.pathExists(destination))) continue
-      if ((await fs.readFile(source)).equals(await fs.readFile(destination))) await fs.remove(destination)
+      const sourceBytes = await fs.readFile(source)
+      const installedBytes = await fs.readFile(destination)
+      const digest = createHash('sha256').update(installedBytes).digest('hex')
+      if (
+        sourceBytes.equals(installedBytes)
+        || RETIRED_HOOK_STOCK_SHA256[file]?.includes(digest) === true
+      ) await fs.remove(destination)
     }
   }
   catch (error) {
@@ -1188,13 +1209,13 @@ export async function registerHooksInSettingsFile(
       raw = await fs.readFile(settingsPath, 'utf-8')
     }
     catch (error) {
-      return `${settingsPath} could not be read (${error}); it was left unchanged.`
+      return `${settingsPath} could not be read (${error}); it was left unchanged. Resolve access and rerun CCG install to complete hook migration.`
     }
     try {
       settings = JSON.parse(raw)
     }
     catch {
-      return `${settingsPath} is not valid JSON; it was left unchanged.`
+      return `${settingsPath} is not valid JSON; it was left unchanged. Repair it and rerun CCG install to complete hook migration.`
     }
   }
 
