@@ -1,10 +1,6 @@
 name: Build codeagent-wrapper binaries
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'codeagent-wrapper/**'
   workflow_dispatch:
 
 permissions:

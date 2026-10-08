@@ -12,8 +12,6 @@ name: Publish to npm
 #   Environment name:   npm-publish   (must equal `environment:` below)
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       dry_run:
