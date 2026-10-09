@@ -25,7 +25,13 @@ import Schema from '@deepseek-ai/schemastery'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import * as ToolSubagentNamespace from '@deepseek-ai/dsh-tool-subagent'
 import * as SkillFilesystemNamespace from '@deepseek-ai/dsh-skill-filesystem'
-import { registerConfigRoute, registerTeamRoute, settingsOperations } from './api.js'
+import {
+  describeProfileSettings,
+  mutateProfileSettings,
+  registerConfigRoute,
+  registerTeamRoute,
+  settingsOperations,
+} from './api.js'
 import { renderTriagePrompt } from './modes.js'
 import {
   CROSSCHECK_TOOL,
@@ -696,7 +702,7 @@ export function apply(ctx, config = {}) {
         )
       }
       snapshot = () => {
-        const descriptor = settings.describe().find((entry) => entry.ns === SETTINGS_NAMESPACE)
+        const descriptor = describeProfileSettings(settings, ctx.fiber)
         return {
           value: readConfig(),
           user: descriptor?.user,
@@ -705,10 +711,10 @@ export function apply(ctx, config = {}) {
         }
       }
       writer = {
-        replace: async (section, revision, patch) => {
-          const operations = settingsOperations(section, patch)
+        replace: async (section, revision, patch, previous) => {
+          const operations = settingsOperations(section, patch, previous)
           if (operations.length > 0) {
-            await settings.mutate(SETTINGS_NAMESPACE, operations, revision)
+            await mutateProfileSettings(settings, ctx.fiber, operations, revision)
           }
         },
       }

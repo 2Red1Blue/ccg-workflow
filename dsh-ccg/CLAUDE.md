@@ -14,7 +14,7 @@ COPIED (a profile pointing at an npx cache directory breaks on the next run),
 and a profile needs BOTH a dependency and a `dsh.profile.bundles` entry — `pnpm
 add` writes only the first.
 
-**Version**: 0.4.8 · **Tests**: 121 · **Runtime deps**: none · **Build step**: none
+**Version**: 0.4.9 · **Tests**: 125 · **Runtime deps**: none · **Build step**: none
 
 ---
 

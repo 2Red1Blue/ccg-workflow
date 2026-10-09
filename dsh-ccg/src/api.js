@@ -226,17 +226,75 @@ export function nextUserSection(user, patch) {
 /** Turn changed CCG settings fields into DSH 0.2 profile-edit operations.
  * @param section - the next raw CCG settings section.
  * @param patch - fields the card submitted.
- * @returns operations limited to the four fields the card owns.
+ * @param previous - the user section before applying the patch.
+ * @returns operations limited to the tier, team, and role-routing fields the
+ *   card owns.
  */
-export function settingsOperations(section, patch) {
+export function settingsOperations(section, patch, previous = {}) {
   const operations = []
-  for (const key of ['strong', 'worker', 'roles', 'team']) {
+  for (const key of ['strong', 'worker', 'team']) {
     if (!Object.hasOwn(patch ?? {}, key)) continue
     operations.push(Object.hasOwn(section, key)
       ? { op: 'set', path: [key], value: section[key] }
       : { op: 'unset', path: [key] })
   }
+  for (const [role, entry] of Object.entries(patch?.roles ?? {})) {
+    if (!ROLE_NAMES.includes(role)) throw new Error(`unknown role "${role}"`)
+    const path = ['roles', role]
+    const models = readModels(entry)
+    const before = previous?.roles?.[role]
+    if (models.length > 0) {
+      operations.push({ op: 'set', path: [...path, 'models'], value: models })
+      for (const field of ['provider', 'model']) {
+        if (Object.hasOwn(before ?? {}, field)) operations.push({ op: 'unset', path: [...path, field] })
+      }
+      continue
+    }
+    const remaining = section?.roles?.[role]
+    if (remaining === undefined || Object.keys(remaining).length === 0) {
+      operations.push({ op: 'unset', path })
+      continue
+    }
+    for (const field of ['models', 'provider', 'model']) {
+      if (field !== 'models' && !Object.hasOwn(before ?? {}, field)) continue
+      operations.push({ op: 'unset', path: [...path, field] })
+    }
+  }
   return operations
+}
+
+/** Return the profile entry id that owns a plugin fiber.
+ * @param fiber - the plugin's Loader fiber.
+ * @returns the entry id used as the DSH 0.2 Settings namespace, or undefined
+ *   when the fiber is not attached to a Loader entry.
+ */
+export function profileEntryId(fiber) {
+  return fiber?.entry?.options?.id
+}
+
+/** Read the Settings descriptor belonging to one plugin fiber.
+ * @param settings - the DSH 0.2 Settings service.
+ * @param fiber - the plugin's Loader fiber.
+ * @returns the matching descriptor, or undefined if the fiber has no entry.
+ */
+export function describeProfileSettings(settings, fiber) {
+  const entryId = profileEntryId(fiber)
+  if (entryId === undefined) return undefined
+  return settings.describe().find((entry) => entry.ns === entryId)
+}
+
+/** Apply SettingsPathOps to the entry that owns one plugin fiber.
+ * @param settings - the DSH 0.2 Settings service.
+ * @param fiber - the plugin's Loader fiber.
+ * @param operations - edits to apply to volatile fields.
+ * @param revision - the descriptor revision read by the caller.
+ * @returns the Settings mutation result.
+ * @throws if the fiber has no owning profile entry.
+ */
+export function mutateProfileSettings(settings, fiber, operations, revision) {
+  const entryId = profileEntryId(fiber)
+  if (entryId === undefined) throw new Error('ccg: plugin fiber has no profile entry id')
+  return settings.mutate(entryId, operations, revision)
 }
 
 /**
@@ -452,7 +510,7 @@ export function registerConfigRoute(ctx, scope, snapshot, catalog = async () => 
             throw new TypeError('ccg: expectedRevision must be a non-negative safe integer')
           }
           const { user } = snapshot()
-          await scope.replace(nextUserSection(user, patch), expectedRevision, patch)
+          await scope.replace(nextUserSection(user, patch), expectedRevision, patch, user)
           const after = snapshot()
           send(res, 200, buildConfigPayload(
             after.value, after.user, after.writable, await catalog(), after.revision,

@@ -6,7 +6,7 @@ const manifest = JSON.parse(await readFile(new URL('../package.json', import.met
 const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
 
 test('the package release and lockfile versions agree', () => {
-  assert.equal(manifest.version, '0.4.8')
+  assert.equal(manifest.version, '0.4.9')
   assert.equal(lock.version, manifest.version)
   assert.equal(lock.packages[''].version, manifest.version)
 })

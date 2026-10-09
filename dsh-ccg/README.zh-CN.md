@@ -2,7 +2,7 @@
 
 **把 CCG 的多模型角色矩阵搬进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —— 七个角色委派工具，各自跑在自己的模型上，不依赖任何外部 CLI。任一角色都能挂多个模型同时作答，也能被雇成有自己文件的常驻队友。所有权与项目决策都是持久的。**
 
-[English](./README.md) · MIT · **dsh-ccg 0.4.8** · 隶属 [CCG](https://github.com/fengshao1227/ccg-workflow) —— ⭐ 请点仓库，不是这个目录
+[English](./README.md) · MIT · **dsh-ccg 0.4.9** · 隶属 [CCG](https://github.com/fengshao1227/ccg-workflow) —— ⭐ 请点仓库，不是这个目录
 
 ---
 

@@ -7,7 +7,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildConfigPayload, isLoopback, nextUserSection, settingsOperations } from '../src/api.js'
+import {
+  buildConfigPayload,
+  describeProfileSettings,
+  isLoopback,
+  mutateProfileSettings,
+  nextUserSection,
+  profileEntryId,
+  settingsOperations,
+} from '../src/api.js'
 import { ROLE_NAMES } from '../src/roles.js'
 
 test('the payload reports each tier, whether the user layer carries it, and the tools', () => {
@@ -136,11 +144,131 @@ test('profile writes touch only the CCG fields the card changed', () => {
   })
   assert.deepEqual(settingsOperations(next, patch), [
     { op: 'unset', path: ['strong'] },
-    { op: 'set', path: ['roles'], value: { builder: { enabled: false } } },
     { op: 'set', path: ['team'], value: true },
+    { op: 'unset', path: ['roles', 'builder', 'models'] },
   ])
   assert.deepEqual(settingsOperations(next, {}), [])
 })
+
+test('role routing edits preserve inherited role settings under SettingsPathOps', () => {
+  const base = {
+    roles: {
+      reviewer: { enabled: false, tier: 'strong' },
+      builder: { toolName: 'build_special', tier: 'worker' },
+      architect: { enabled: true, toolName: 'design_special' },
+    },
+  }
+  const user = { roles: { builder: { models: [{ provider: 'old', model: 'old' }] } } }
+  const patch = { roles: { builder: { models: [{ provider: 'gw', model: 'fast' }] } } }
+  const section = nextUserSection(user, patch)
+  const raw = applySettingsPathOps(user, base, settingsOperations(section, patch))
+
+  assert.deepEqual(raw, {
+    roles: { builder: { models: [{ provider: 'gw', model: 'fast' }] } },
+  })
+  assert.deepEqual(mergeSettingsLayers(base, raw).roles, {
+    reviewer: { enabled: false, tier: 'strong' },
+    builder: { toolName: 'build_special', tier: 'worker', models: [{ provider: 'gw', model: 'fast' }] },
+    architect: { enabled: true, toolName: 'design_special' },
+  })
+})
+
+test('role route writes clear only legacy single-pin fields that were present', () => {
+  const previous = { roles: { builder: { provider: 'old', model: 'old', toolName: 'build_special' } } }
+  const patch = { roles: { builder: { models: [{ provider: 'gw', model: 'fast' }] } } }
+  const section = nextUserSection(previous, patch)
+
+  assert.deepEqual(settingsOperations(section, patch, previous), [
+    { op: 'set', path: ['roles', 'builder', 'models'], value: [{ provider: 'gw', model: 'fast' }] },
+    { op: 'unset', path: ['roles', 'builder', 'provider'] },
+    { op: 'unset', path: ['roles', 'builder', 'model'] },
+  ])
+})
+
+test('clearing a role route removes only its routing fields', () => {
+  const user = {
+    roles: {
+      builder: {
+        models: [{ provider: 'gw', model: 'fast' }],
+        enabled: false,
+        tier: 'strong',
+        toolName: 'build_special',
+      },
+    },
+  }
+  const patch = { roles: { builder: null } }
+  const section = nextUserSection(user, patch)
+
+  assert.deepEqual(applySettingsPathOps(user, {}, settingsOperations(section, patch, user)), {
+    roles: { builder: { enabled: false, tier: 'strong', toolName: 'build_special' } },
+  })
+})
+
+test('DSH 0.2 Settings reads and writes by the owner fiber entry id', async () => {
+  const fiber = { entry: { options: { id: 'ccg-custom' } } }
+  const calls = []
+  const settings = {
+    describe: () => [
+      { ns: 'ccg', revision: 3 },
+      { ns: 'ccg-custom', revision: 7, user: { team: false } },
+    ],
+    mutate: async (...args) => { calls.push(args) },
+  }
+  const ops = [{ op: 'set', path: ['team'], value: true }]
+
+  assert.equal(profileEntryId(fiber), 'ccg-custom')
+  assert.equal(describeProfileSettings(settings, fiber).revision, 7)
+  await mutateProfileSettings(settings, fiber, ops, 7)
+  assert.deepEqual(calls, [['ccg-custom', ops, 7]])
+  assert.equal(describeProfileSettings(settings, {}), undefined)
+  assert.throws(() => mutateProfileSettings(settings, {}, ops, 7), /no profile entry id/)
+})
+
+function applySettingsPathOps(current, base, operations) {
+  let result = structuredClone(current)
+  for (const operation of operations) {
+    if (operation.op === 'set') {
+      result = setSettingsPath(result, operation.path, operation.value)
+      continue
+    }
+    const inherited = getSettingsPath(base, operation.path)
+    result = inherited === undefined
+      ? unsetSettingsPath(result, operation.path)
+      : setSettingsPath(result, operation.path, inherited)
+  }
+  return result
+}
+
+function getSettingsPath(value, path) {
+  return path.reduce((current, key) => current?.[key], value)
+}
+
+function setSettingsPath(value, path, item) {
+  const [head, ...tail] = path
+  if (head === undefined) return item
+  const result = { ...value }
+  result[head] = tail.length === 0 ? item : setSettingsPath(result[head] ?? {}, tail, item)
+  return result
+}
+
+function unsetSettingsPath(value, path) {
+  const [head, ...tail] = path
+  if (head === undefined || value[head] === undefined) return value
+  const result = { ...value }
+  if (tail.length === 0) delete result[head]
+  else result[head] = unsetSettingsPath(result[head], tail)
+  return result
+}
+
+function mergeSettingsLayers(base, user) {
+  const result = { ...base }
+  for (const [key, value] of Object.entries(user)) {
+    result[key] = value && typeof value === 'object' && !Array.isArray(value)
+      ? mergeSettingsLayers(base[key] ?? {}, value)
+      : value
+  }
+  return result
+}
 
 test('half a route clears the tier instead of storing something inert', () => {
   const user = { strong: { provider: 'old', model: 'old' } }
