@@ -2,7 +2,7 @@
 
 **CCG's multi-model role matrix for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — seven role-pinned delegation tools, each on its own model, with no external CLI. Any role can answer as a panel of models, or be hired as a live teammate with files of its own. Ownership and project decisions are durable.**
 
-[中文](./README.zh-CN.md) · MIT · tracks dsh `0.1.x` · part of [CCG](https://github.com/fengshao1227/ccg-workflow) — ⭐ the repo, not this folder
+[中文](./README.zh-CN.md) · MIT · **dsh-ccg 0.4.8** · part of [CCG](https://github.com/fengshao1227/ccg-workflow) — ⭐ the repo, not this folder
 
 ---
 
@@ -227,7 +227,7 @@ All three borrow the harness's own component kit (`dsh-client-ui-primitives`) wh
 
 The third is the **team strip** above the composer: who is hired, what each one exclusively owns, and who is still working. It appears only when a team exists, so a solo session never sees it. Ownership is the plugin's one mechanical guarantee, and until now the only way to see it was to spend a turn asking the model to read `ccg_roster` — something the harness already knew. It reads its own `/api/ccg/team` route and polls only while a turn is running or a teammate is still working; once everything settles it makes no requests at all. Reading it never mutates the roster: `ccg_roster` prunes rows the harness no longer holds, because a model reading the roster is a considered act, but a background GET that quietly unclaimed files would not be.
 
-The card reads and writes through this plugin's own `/api/ccg/config` route rather than the client settings scope. That is not a shortcut: `dsh-host-apiproxy` serves settings namespaces to the browser from a fixed allowlist, on the principle that *"a future registration does not become remotely readable or writable by default"*, so a third-party namespace is deliberately not on it. The Host still owns every write, through the same settings scope the profile patch layers under, and writes from anywhere but this machine are refused.
+The card reads and writes through this plugin's own `/api/ccg/config` route. The Host owns writes: DSH 0.2 applies them through the Settings service to this profile entry's volatile fields; older supported DSH releases use their plugin-owned settings scope. Writes from anywhere but this machine are refused.
 
 ## Configure by hand
 
@@ -245,17 +245,11 @@ In your profile's `cordis.patch.yml`:
       model: a-fast-model
 ```
 
-`provider` names a route you declared in `$DSH_HOME/settings.yaml` under `llm-pi-ai.providers`. Any vendor API or OpenAI-compatible gateway works.
+`provider` names a route configured under **Settings › Models** (or in the profile configuration under `llm-pi-ai.providers`). Any vendor API or OpenAI-compatible gateway works.
 
-…or in the harness settings document (`$DSH_HOME/settings.yaml`), which the Settings dialog opens for you and which re-applies **live, without a restart**:
+On DSH 0.2, the card edits this `ccg` profile entry directly and applies changes live. It does not require a separate `ccg:` section in `$DSH_HOME/settings.yaml`.
 
-```yaml
-ccg:
-  strong: { provider: my-gateway, model: a-reasoning-model }
-  worker: { provider: my-gateway, model: a-fast-model }
-```
-
-The plugin registers `ccg` as a settings namespace, so the profile patch is the composition base and this section is the user layer above it. Editing it retires the current role tools and registers the next set in place.
+The profile patch remains the source of the effective CCG configuration. On older supported DSH releases, CCG also accepts its legacy plugin-owned `ccg` settings section.
 
 Per-role overrides sit under `roles`:
 
@@ -295,7 +289,7 @@ The conventions published to the system prompt are generated from the resolved m
 
 ## Requirements
 
-- DeepSeek Harness `0.1.0-rc.6` or newer (developer preview — its plugin API is still moving)
+- Tested with DeepSeek Harness `0.1.0-rc.6`, `0.1.1-rc.2`, and `0.2.1-alpha.1`.
 - At least one configured provider route, with its credential stored through the harness (the web **Settings › Models** page writes it) — a route whose `apiKeyEnv` is unset fails at the first request, not at boot
 - A subagent provider with the `persona` capability for personas to apply (`spawn`, the default, has it)
 

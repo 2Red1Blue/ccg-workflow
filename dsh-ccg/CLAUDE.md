@@ -2,12 +2,11 @@
 
 CCG's multi-model role matrix as a DeepSeek Harness plugin.
 
-**Lives in the `ccg-workflow` repo and ships inside its npm package.** One repo,
-one package, one version number: `dsh-ccg/` is on `ccg-workflow`'s `files` list,
-and `ccg dsh install` copies it to `~/.dsh/ccg/dsh-ccg` and wires it into a
-harness profile. Publishing it standalone is a decision that was deliberately
-left one line away — `.github/workflows/publish-dsh-ccg.yml` is complete and
-reduced to manual dispatch; see the repo's CLAUDE.md for how to flip it back.
+**Lives in the `ccg-workflow` repo and ships inside its npm package.** The root
+package owns the CCG CLI release; this nested manifest owns the compatibility
+version and peer ranges the Harness uses to admit the plugin. `ccg dsh install`
+copies it to `~/.dsh/ccg/dsh-ccg` and wires it into a Harness profile. The
+standalone publish workflow remains dormant and manual-only.
 
 The install path is `src/utils/installer-dsh.ts` in the parent package, not
 here. Two things it gets right that are easy to get wrong: the plugin must be
@@ -15,7 +14,7 @@ COPIED (a profile pointing at an npx cache directory breaks on the next run),
 and a profile needs BOTH a dependency and a `dsh.profile.bundles` entry — `pnpm
 add` writes only the first.
 
-**Version**: 0.4.7 · **Tests**: 116 · **Runtime deps**: none · **Build step**: none
+**Version**: 0.4.8 · **Tests**: 121 · **Runtime deps**: none · **Build step**: none
 
 ---
 
@@ -42,7 +41,7 @@ Standard / Deep / Team, quotes the real cost, and waits for a yes past Direct.
 ## Layout
 
 ```
-src/index.js       plugin body: Config, mounting, settings namespace, hot reload
+src/index.js       plugin body: Config, mounting, profile settings, hot reload
 src/roles.js       the 7 personas + resolveRoles() (which model serves which role)
 src/crosscheck.js  panels: prompt building, the report, panelToolDefinition()
 src/team.js        hiring: the teammate persona, ownership, teamToolDefinition()
@@ -107,13 +106,9 @@ test/              116 unit tests over the pure functions, the tool definitions,
 - A tool's `enum` is enforced by the framework **before** `execute` runs, and
   its error names the valid values. That is a better message than anything
   thrown inside, so the in-`execute` guard is only for direct calls.
-- Whether third-party settings namespaces reach the browser **depends on the
-  harness generation**, so this plugin serves its own route either way. Through
-  `0.1.0-rc.x`, `dsh-host-apiproxy` built an allowlist from constants plus
-  configurable model providers and refused everything else
-  (`settings-not-exposed`). From `0.1.1-rc.x` the describe handler is just
-  `settings.describe({redactSecrets: true})` — every registered namespace,
-  unfiltered. Writes are refused off-loopback in both.
+- DSH `0.2.1-alpha.1` edits volatile fields on a plugin's profile entry through
+  `ctx.settings`; the CCG card sends writes to that Host owner. DSH `0.1.x`
+  keeps the plugin-owned settings scope, which this plugin still supports.
 - The Plugins tab renders **only hand-written cards** from plugins shipping a
   browser half (`exports["./client"]` + `dsh.client` in package.json). It never
   auto-generates a form from a schema.
@@ -181,7 +176,8 @@ test/              116 unit tests over the pure functions, the tool definitions,
   calls" + a request to confirm; a trivial one was answered directly.
 - `context: inherit`: a forked builder answered from a decision made three
   turns earlier that was never in its brief.
-- The settings card: edits save to `~/.dsh/settings.yaml` and re-apply live.
+- The settings card: edits update the active profile through the Host Settings
+  service and rebuild the role tools live.
 - **The panel view** (0.4.4): a three-model `ccg_analyze` call rendered as three
   named columns — the running state naming the models first — then rendered
   identically after `dsh web` was restarted and the page reloaded, which is what

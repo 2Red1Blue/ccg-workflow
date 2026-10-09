@@ -1,19 +1,20 @@
 /**
  * Unit tests for the card's data seam. The payload builder and the section
  * folder are pure, so what the card shows and what a save stores are tested
- * without a browser, a web server, or a settings document.
+ * without a browser, a web server, or a profile-settings write.
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildConfigPayload, isLoopback, nextUserSection } from '../src/api.js'
+import { buildConfigPayload, isLoopback, nextUserSection, settingsOperations } from '../src/api.js'
 import { ROLE_NAMES } from '../src/roles.js'
 
 test('the payload reports each tier, whether the user layer carries it, and the tools', () => {
   const value = { strong: { provider: 'gw', model: 'big' }, worker: { provider: 'gw', model: 'fast' } }
-  const payload = buildConfigPayload(value, { strong: value.strong }, true)
+  const payload = buildConfigPayload(value, { strong: value.strong }, true, [], 7)
 
+  assert.equal(payload.revision, 7)
   assert.deepEqual(payload.tiers.strong, { provider: 'gw', model: 'big', overridden: true })
   assert.deepEqual(payload.tiers.worker, { provider: 'gw', model: 'fast', overridden: false })
   assert.equal(payload.roles.length, ROLE_NAMES.length)
@@ -118,6 +119,27 @@ test('a save stores a full pair, clears on null, and carries other keys through'
     nextUserSection(user, { strong: null }),
     { roles: { builder: { tier: 'strong' } } },
   )
+})
+
+test('profile writes touch only the CCG fields the card changed', () => {
+  const user = {
+    strong: { provider: 'old', model: 'old' },
+    roles: { builder: { models: [{ provider: 'gw', model: 'old' }], enabled: false } },
+    team: false,
+  }
+  const patch = { strong: null, roles: { builder: null }, team: true }
+  const next = nextUserSection(user, patch)
+
+  assert.deepEqual(next, {
+    roles: { builder: { enabled: false } },
+    team: true,
+  })
+  assert.deepEqual(settingsOperations(next, patch), [
+    { op: 'unset', path: ['strong'] },
+    { op: 'set', path: ['roles'], value: { builder: { enabled: false } } },
+    { op: 'set', path: ['team'], value: true },
+  ])
+  assert.deepEqual(settingsOperations(next, {}), [])
 })
 
 test('half a route clears the tier instead of storing something inert', () => {

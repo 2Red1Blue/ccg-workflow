@@ -1,6 +1,6 @@
 {
   "name": "dsh-ccg",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "type": "module",
   "description": "CCG's multi-model role matrix for DeepSeek Harness: seven role-pinned delegation tools (analyze / design / build / debug / optimize / review / test), each on its own model with its own expert persona. Any role can hold several models and answer as a panel, or be hired as a live teammate with its own files. Durable ownership and project memory. Pure provider API — no external CLI.",
   "keywords": [
@@ -66,13 +66,13 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-skill-filesystem": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-subagent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tool-subagent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6 || 0.2.1-alpha.1",
+    "@deepseek-ai/dsh-skill-filesystem": "^0.1.0-rc.6 || 0.2.1-alpha.1",
+    "@deepseek-ai/dsh-subagent": "^0.1.0-rc.6 || 0.2.1-alpha.1",
+    "@deepseek-ai/dsh-tool-subagent": "^0.1.0-rc.6 || 0.2.1-alpha.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6 || 0.2.1-alpha.1",
     "@deepseek-ai/schemastery": "^3.0.0",
-    "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6 || 0.2.1-alpha.1",
     "zod": "^4.0.0"
   },
   "scripts": {

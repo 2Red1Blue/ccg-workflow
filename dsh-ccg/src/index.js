@@ -22,11 +22,10 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import Schema from '@deepseek-ai/schemastery'
-import { deepEqualJson, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import * as ToolSubagentNamespace from '@deepseek-ai/dsh-tool-subagent'
 import * as SkillFilesystemNamespace from '@deepseek-ai/dsh-skill-filesystem'
-import { registerConfigRoute, registerTeamRoute } from './api.js'
+import { registerConfigRoute, registerTeamRoute, settingsOperations } from './api.js'
 import { renderTriagePrompt } from './modes.js'
 import {
   CROSSCHECK_TOOL,
@@ -59,12 +58,17 @@ const SkillFilesystem = { ...SkillFilesystemNamespace }
 /** The skill root shipped inside this package. */
 export const BUNDLED_SKILL_DIR = fileURLToPath(new URL('../skills/', import.meta.url))
 
-/** User-settings namespace: the `ccg:` section of the harness settings document. */
+/** Profile entry id used by the CCG configuration surface. */
 export const SETTINGS_NAMESPACE = 'ccg'
+
+/** Mark a field as profile-editable when the host's Schemastery supports it. */
+export function volatileField(schema) {
+  return typeof schema?.volatile === 'function' ? schema.volatile() : schema
+}
 
 const TierSchema = Schema.object({
   provider: Schema.string().description(
-    'Provider route name as declared under `llm-pi-ai.providers` in $DSH_HOME/settings.yaml.',
+    'Provider route name as declared under `llm-pi-ai.providers` in the active profile.',
   ),
   model: Schema.string().description('Model id served by that route.'),
   maxTokens: Schema.number()
@@ -110,13 +114,13 @@ const RoleSchema = Schema.object({
 
 /** Plugin config: two model tiers, optional per-role overrides, delegation policy. */
 export const Config = Schema.object({
-  strong: TierSchema.description(
+  strong: volatileField(TierSchema).description(
     'Reasoning tier — analysis, design, debugging and review default here.',
   ),
-  worker: TierSchema.description(
+  worker: volatileField(TierSchema).description(
     'Fast tier — implementation, optimisation and tests default here.',
   ),
-  roles: Schema.dict(RoleSchema).description(
+  roles: volatileField(Schema.dict(RoleSchema)).description(
     'Per-role overrides keyed by role name (analyzer, architect, builder, debugger, '
     + 'optimizer, reviewer, tester). An unknown key is refused rather than ignored.',
   ),
@@ -153,8 +157,7 @@ export const Config = Schema.object({
       'Register `ccg_crosscheck`: ask every panel member the same question at once and read the '
       + 'answers side by side. Needs at least two distinct members.',
     ),
-  team: Schema.boolean()
-    .default(true)
+  team: volatileField(Schema.boolean().default(true))
     .description(
       'Register `ccg_team`: hire a role as a live teammate that keeps working across turns, '
       + 'takes more work through `send_message`, and reports back on its own. Needs a subagent '
@@ -222,6 +225,16 @@ export const Config = Schema.object({
       + 'directory of `<name>/SKILL.md` bundles, such as your own CCG skills checkout.',
     ),
 })
+
+/** Read live Config values while preserving ordinary plain values on older hosts. */
+export function configSnapshot(config = {}) {
+  return Object.fromEntries(Object.entries(config).map(([key, value]) => [
+    key,
+    value !== null && typeof value === 'object' && typeof value.get === 'function'
+      ? value.get()
+      : value,
+  ]))
+}
 
 /**
  * Resolve the skill roots this plugin publishes: the bundled one unless it is
@@ -570,17 +583,15 @@ function mountMatrix(ctx, config, deps = {}) {
 }
 
 /**
- * Realise the matrix, then expose the same shape as a user-settings namespace
- * so it can be edited from the harness settings document — and from the
- * configuration surfaces reading it — instead of only the profile patch. The
- * profile patch stays the composition `base`, the user layer sits above it, and
- * a change re-applies live without a restart.
+ * Realise the matrix from profile Config. DSH 0.2 edits its volatile fields on
+ * the profile entry; older supported hosts can layer the legacy plugin-owned
+ * settings namespace over the same profile base.
  *
  * @param ctx - plugin context.
  * @param config - validated {@link Config} from the loader.
  */
 export function apply(ctx, config = {}) {
-  let active = config
+  const readConfig = () => configSnapshot(config)
 
   // Ownership memory is opened ONCE, out here, not inside the matrix fiber: a
   // domain name may be open only once at a time, and the matrix is disposed and
@@ -591,16 +602,28 @@ export function apply(ctx, config = {}) {
   let teammates
   const getTable = () => teammates
 
-  let fiber = mountMatrix(ctx, active, { getTable })
+  let fiber = mountMatrix(ctx, readConfig(), { getTable })
 
   const reload = async (next) => {
-    if (deepEqualJson(next, active)) return
-    active = next
     const previous = fiber
     fiber = undefined
     if (previous !== undefined) await previous.dispose()
     fiber = mountMatrix(ctx, next, { getTable })
   }
+  let reloads = Promise.resolve()
+  const queueReload = (next) => {
+    reloads = reloads.catch((error) => {
+      ctx.logger?.warn?.(`ccg: previous configuration update failed — ${error}`)
+    }).then(() => reload(next))
+    return reloads
+  }
+
+  // DSH 0.2 exposes live Config edits as volatile references on the plugin entry.
+  ctx.on('loader/volatile-update', () => {
+    void queueReload(readConfig()).catch((error) => {
+      ctx.logger?.warn?.(`ccg: could not apply profile settings — ${error}`)
+    })
+  })
 
   // Optional: a deployment without the storage form still hires teammates, it
   // just cannot check or remember who owns what.
@@ -639,25 +662,55 @@ export function apply(ctx, config = {}) {
   // The settings seam is optional and arrives on its own schedule; the matrix
   // above is already serving by the time this resolves.
   ctx.inject(['settings'], (settingsCtx) => {
-    const scope = settingsCtx.settings.register(settingsNamespace(SETTINGS_NAMESPACE), Config, {
-      base: config,
-      applies: 'live',
-    })
-    settingsCtx.effect(() => scope.watch(reload), 'ccg: settings watch')
-    reload(scope.get()).catch((error) => {
-      settingsCtx.logger?.warn?.(`ccg: could not apply stored settings — ${error}`)
-    })
+    const settings = settingsCtx.settings
+    let scope
+    let snapshot
+    let writer
 
-    // The raw user layer lives on the provider's descriptor, not on the owner
-    // scope — the card needs it to mark which tiers the user overrode.
-    const snapshot = () => {
-      const descriptor = settingsCtx.settings
-        .describe()
-        .find((entry) => entry.ns === SETTINGS_NAMESPACE)
-      return {
-        value: descriptor?.value ?? scope.get(),
-        user: descriptor?.user,
-        writable: true,
+    if (typeof settings.register === 'function') {
+      // DSH 0.1 registers plugin-owned settings namespaces in a settings document.
+      scope = settings.register(SETTINGS_NAMESPACE, Config, {
+        base: readConfig(),
+        applies: 'live',
+      })
+      settingsCtx.effect(() => scope.watch((next) => queueReload(next)), 'ccg: settings watch')
+      queueReload(scope.get()).catch((error) => {
+        settingsCtx.logger?.warn?.(`ccg: could not apply stored settings — ${error}`)
+      })
+      snapshot = () => {
+        const descriptor = settings.describe().find((entry) => entry.ns === SETTINGS_NAMESPACE)
+        return {
+          value: scope.get(),
+          user: descriptor?.user,
+          writable: true,
+          revision: descriptor?.revision,
+        }
+      }
+      writer = scope
+    } else {
+      // DSH 0.2 edits volatile fields on this plugin's own profile entry.
+      if (typeof settings.configure === 'function') {
+        settingsCtx.effect(
+          () => settings.configure({ auto: false }, ctx.fiber),
+          'ccg: custom settings page',
+        )
+      }
+      snapshot = () => {
+        const descriptor = settings.describe().find((entry) => entry.ns === SETTINGS_NAMESPACE)
+        return {
+          value: readConfig(),
+          user: descriptor?.user,
+          writable: descriptor !== undefined && settings.writable === true,
+          revision: descriptor?.revision,
+        }
+      }
+      writer = {
+        replace: async (section, revision, patch) => {
+          const operations = settingsOperations(section, patch)
+          if (operations.length > 0) {
+            await settings.mutate(SETTINGS_NAMESPACE, operations, revision)
+          }
+        },
       }
     }
 
@@ -687,7 +740,7 @@ export function apply(ctx, config = {}) {
 
     settingsCtx.inject(['webServer'], (webCtx) => {
       webCtx.effect(
-        () => registerConfigRoute(webCtx, scope, snapshot, catalog),
+        () => registerConfigRoute(webCtx, writer, snapshot, catalog),
         'ccg: card configuration route',
       )
     })

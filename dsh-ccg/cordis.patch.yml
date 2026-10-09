@@ -10,8 +10,8 @@
 #       strong: { provider: my-gateway, model: a-reasoning-model }
 #       worker: { provider: my-gateway, model: a-fast-model }
 #
-# `provider` names a route you declared under `llm-pi-ai.providers` in
-# $DSH_HOME/settings.yaml. Per-role overrides, renaming a tool, or switching
+# `provider` names a route you declared under `llm-pi-ai.providers` in the
+# active profile configuration. Per-role overrides, renaming a tool, or switching
 # one role off all live under `config.roles.<role>` — see README.md.
 #
 # Note for anyone editing this: a patch replaces a row's config wholesale, so

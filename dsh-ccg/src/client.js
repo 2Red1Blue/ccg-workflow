@@ -9,11 +9,10 @@
  *    calls render — which is how a panel's answers come back side by side
  *    instead of as one blob of text in a generic card.
  *
- * Both read this plugin's own `/api/ccg/config` route rather than the client
- * settings scope. Older harnesses served the browser only an allowlist of
- * settings namespaces, which no third-party namespace was on; newer ones serve
- * every registered namespace. The route works on both and is therefore what
- * this file keeps reading. The Host still owns every write — see src/api.js.
+ * Both read this plugin's own `/api/ccg/config` route rather than a client
+ * settings scope. This keeps the card's payload and panel registry on one
+ * host-owned path across supported DSH settings generations. The Host still
+ * owns every write — see src/api.js.
  *
  * Written as a plain module rather than a bundled one: the loader hands the
  * factory its own `require`, so hand-written `React.createElement` needs no
@@ -54,7 +53,7 @@ window.__ModuleLoader__.load({
     const NS = 'ccg'
 
     /**
-     * The settings namespace this card edits — `SETTINGS_NAMESPACE` in
+     * The profile entry id this card edits — `SETTINGS_NAMESPACE` in
      * src/index.js, repeated here because a browser module cannot import from
      * the host half. `test/client-slots.test.mjs` pins the two together.
      *
@@ -544,7 +543,7 @@ window.__ModuleLoader__.load({
           const response = await fetch(API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(patch),
+            body: JSON.stringify({ patch, expectedRevision: payload?.revision }),
           })
           if (!response.ok) throw new Error(response.status)
           const body = await response.json()
@@ -1230,7 +1229,7 @@ window.__ModuleLoader__.load({
 
       // Both `key` and `id`, on purpose. The plugin tab redeclared this slot
       // from a `list` (ordered by `id`) to a `keyed` one (dispatched by the
-      // settings namespace the card edits) — and a registration missing the
+      // profile entry the card edits) — and a registration missing the
       // option its slot's kind requires THROWS, which fails the whole loader
       // entry and takes the panel view and the team strip down with the card.
       // The two options are read by different kinds and ignored by the other,

@@ -4,7 +4,7 @@
 #
 # The loader needs an absolute POSIX path (on Windows, a file:/// URL).
 # Adjust the path below to wherever this repository sits, and set the two
-# tiers to routes your $DSH_HOME/settings.yaml actually declares.
+# tiers to routes your active profile actually declares.
 - insert:
     - id: ccg-dev
       name: '/Users/li/Developer/my_proce/codex_gemini_skills/dsh-ccg/src/index.js'

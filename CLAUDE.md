@@ -338,7 +338,7 @@
 | TypeScript CLI 源码 | [src/CLAUDE.md](./src/CLAUDE.md) | CLI 主入口、命令实现、安装器、i18n、工具链 |
 | 模板文件 | [templates/CLAUDE.md](./templates/CLAUDE.md) | 斜杠命令、提示词、子智能体、技能、规则模板 |
 | codeagent-wrapper | [codeagent-wrapper/CLAUDE.md](./codeagent-wrapper/CLAUDE.md) | Go 二进制包装器，多模型调用桥接，v5.10.0 |
-| DSH 插件 | [dsh-ccg/CLAUDE.md](./dsh-ccg/CLAUDE.md) | CCG 角色矩阵的 DeepSeek Harness 形态，随主包发布，v0.4.6 |
+| DSH 插件 | [dsh-ccg/CLAUDE.md](./dsh-ccg/CLAUDE.md) | CCG 角色矩阵的 DeepSeek Harness 形态，随主包发布，v0.4.8 |
 
 ---
 
@@ -781,7 +781,7 @@ npm 网页的 README 有服务端渲染缓存，发布后要等一会儿才更�
 
 `dsh-ccg/` 是 CCG 角色矩阵的 DSH 形态。它**打进 ccg-workflow 的 tarball**
 （见 `files` 里那 7 条 `dsh-ccg/` 白名单），由 `ccg dsh install` 装进用户的
-harness profile。**一个仓库、一个 npm 包、一个版本号。**
+harness profile。外层 `ccg-workflow` 版本负责 CCG CLI 发布；内层 `dsh-ccg/package.json` 版本负责 DSH 插件兼容声明，两者独立递增。
 
 ### 安装链路（`src/utils/installer-dsh.ts`）
 

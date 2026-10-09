@@ -12,9 +12,11 @@ import { existsSync } from 'node:fs'
 import {
   BUNDLED_SKILL_DIR,
   Config,
+  configSnapshot,
   resolveRoles,
   resolveSkillDirs,
   renderRoutingPrompt,
+  volatileField,
 } from '../src/index.js'
 import { ROLES, ROLE_NAMES } from '../src/roles.js'
 
@@ -22,6 +24,31 @@ const TIERS = {
   strong: { provider: 'gw', model: 'big-model' },
   worker: { provider: 'gw', model: 'fast-model' },
 }
+
+test('profile settings unwrap live Config values and preserve older plain values', () => {
+  const config = {
+    strong: { get: () => ({ provider: 'gw', model: 'big-model' }) },
+    worker: { provider: 'gw', model: 'fast-model' },
+    team: { get: () => false },
+  }
+
+  assert.deepEqual(configSnapshot(config), {
+    strong: { provider: 'gw', model: 'big-model' },
+    worker: { provider: 'gw', model: 'fast-model' },
+    team: false,
+  })
+})
+
+test('profile-editable fields use the host volatile Config API when available', () => {
+  let calls = 0
+  const marked = { field: true }
+  const schema = { volatile: () => { calls += 1; return marked } }
+  assert.equal(volatileField(schema), marked)
+  assert.equal(calls, 1)
+
+  const legacySchema = {}
+  assert.equal(volatileField(legacySchema), legacySchema)
+})
 
 test('every role declares a tool name, a known tier, a summary and a persona', () => {
   const tools = new Set()

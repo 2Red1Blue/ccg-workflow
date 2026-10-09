@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### dsh-ccg 0.4.8
+
+- **DeepSeek Harness 0.2.1-alpha.1 compatibility**: migrate CCG's custom settings card to the profile-entry Settings API and live volatile Config fields. Keep the legacy settings-scope path and existing `0.1.x` peer range; add only the verified `0.2.1-alpha.1` peer version. The nested plugin manifest advances to 0.4.8; the CCG project version is unchanged.
+
 ## [3.6.4] - 2026-09-03
 
 ### 🐛 修复

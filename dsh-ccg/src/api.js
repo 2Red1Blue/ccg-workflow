@@ -1,14 +1,9 @@
 /**
  * The card's data seam.
  *
- * The harness serves settings namespaces to the browser from a fixed allowlist
- * — `dsh-host-apiproxy` builds it from its own constants plus the configurable
- * model providers, so a third-party namespace is deliberately neither readable
- * nor writable over the wire ("a future registration does not become remotely
- * readable or writable by default"). A plugin that wants its own card must
- * therefore serve its own section, which is what this route does: the Host
- * still owns every write, through the same settings scope the profile patch
- * layers under.
+ * The card has its own read route. Writes go through the host Settings owner:
+ * older DSH providers use a registered namespace, while DSH 0.2 edits the
+ * plugin entry's volatile fields in the profile configuration.
  *
  * Writes are refused off-loopback. The harness gates its own configuration
  * methods the same way, because changing model routing from a LAN client is
@@ -60,11 +55,12 @@ function readTier(layer, tier) {
  *
  * @param value - the resolved section.
  * @param user - the raw user layer, when one exists.
- * @param writable - whether the settings document accepts writes.
+ * @param writable - whether the active profile accepts writes.
  * @param models - the harness model catalog, as `{provider, id, name}` entries.
+ * @param revision - settings revision expected by the next write.
  * @returns the card payload.
  */
-export function buildConfigPayload(value, user, writable, models = []) {
+export function buildConfigPayload(value, user, writable, models = [], revision) {
   const tiers = {}
   for (const tier of TIERS) {
     tiers[tier] = {
@@ -117,6 +113,7 @@ export function buildConfigPayload(value, user, writable, models = []) {
 
   return {
     writable: Boolean(writable),
+    ...(Number.isSafeInteger(revision) ? { revision } : {}),
     tiers,
     roles,
     team,
@@ -224,6 +221,22 @@ export function nextUserSection(user, patch) {
   }
 
   return next
+}
+
+/** Turn changed CCG settings fields into DSH 0.2 profile-edit operations.
+ * @param section - the next raw CCG settings section.
+ * @param patch - fields the card submitted.
+ * @returns operations limited to the four fields the card owns.
+ */
+export function settingsOperations(section, patch) {
+  const operations = []
+  for (const key of ['strong', 'worker', 'roles', 'team']) {
+    if (!Object.hasOwn(patch ?? {}, key)) continue
+    operations.push(Object.hasOwn(section, key)
+      ? { op: 'set', path: [key], value: section[key] }
+      : { op: 'unset', path: [key] })
+  }
+  return operations
 }
 
 /**
@@ -410,7 +423,7 @@ function send(res, status, body) {
  * Serve the card's section over the harness web server.
  *
  * @param ctx - a context carrying `webServer`.
- * @param scope - the host-side settings scope for the `ccg` namespace.
+ * @param scope - the host-side writer for the CCG settings section.
  * @param snapshot - reads `{ value, user, writable }` for the current section.
  * @param catalog - resolves the model catalog the selectors offer.
  * @returns the disposer removing the route.
@@ -422,8 +435,8 @@ export function registerConfigRoute(ctx, scope, snapshot, catalog = async () => 
     handler: async (req, res) => {
       try {
         if (req.method === 'GET') {
-          const { value, user, writable } = snapshot()
-          send(res, 200, buildConfigPayload(value, user, writable, await catalog()))
+          const { value, user, writable, revision } = snapshot()
+          send(res, 200, buildConfigPayload(value, user, writable, await catalog(), revision))
           return
         }
         if (req.method === 'POST') {
@@ -431,11 +444,19 @@ export function registerConfigRoute(ctx, scope, snapshot, catalog = async () => 
             send(res, 403, { error: 'ccg: settings writes are accepted from this machine only' })
             return
           }
-          const patch = await readJsonBody(req)
+          const body = await readJsonBody(req)
+          const patch = Object.hasOwn(body, 'patch') ? body.patch : body
+          const expectedRevision = body.expectedRevision
+          if (expectedRevision !== undefined
+            && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
+            throw new TypeError('ccg: expectedRevision must be a non-negative safe integer')
+          }
           const { user } = snapshot()
-          await scope.replace(nextUserSection(user, patch))
+          await scope.replace(nextUserSection(user, patch), expectedRevision, patch)
           const after = snapshot()
-          send(res, 200, buildConfigPayload(after.value, after.user, after.writable, await catalog()))
+          send(res, 200, buildConfigPayload(
+            after.value, after.user, after.writable, await catalog(), after.revision,
+          ))
           return
         }
         res.writeHead(405, { Allow: 'GET, POST' })

@@ -2,7 +2,7 @@
 
 **把 CCG 的多模型角色矩阵搬进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —— 七个角色委派工具，各自跑在自己的模型上，不依赖任何外部 CLI。任一角色都能挂多个模型同时作答，也能被雇成有自己文件的常驻队友。所有权与项目决策都是持久的。**
 
-[English](./README.md) · MIT · 跟随 dsh `0.1.x` · 隶属 [CCG](https://github.com/fengshao1227/ccg-workflow) —— ⭐ 请点仓库，不是这个目录
+[English](./README.md) · MIT · **dsh-ccg 0.4.8** · 隶属 [CCG](https://github.com/fengshao1227/ccg-workflow) —— ⭐ 请点仓库，不是这个目录
 
 ---
 
@@ -227,7 +227,7 @@ dsh --profile headless --patch ./cordis.dev.yml "你的任务"
 
 第三个是输入框上方的**队伍常驻条**：谁被雇了、各自独占哪些文件、谁还在跑。只有真的有队伍时才出现，单干的会话永远看不到它。所有权是这个插件唯一一条机械保证，而在此之前想看一眼只能花一轮让模型去读 `ccg_roster` —— 去问 harness 一件它本来就知道的事。它读自己的 `/api/ccg/team` 路由，**只在有轮次在跑或还有队友在干活时轮询**，全部结算后一个请求都不发。读它永远不会改动名册：`ccg_roster` 会清理 harness 已经不认识的行，因为模型去读名册是一次有意识的动作，而浏览器后台的一个 GET 悄悄把文件解除占用不是。
 
-这张卡片读写走的是本插件自己的 `/api/ccg/config` 路由，而不是客户端 settings scope。这不是偷懒：`dsh-host-apiproxy` 用一份固定白名单决定哪些 settings namespace 下发给浏览器，原则是「**后来注册的 namespace 不会默认变成可远程读写**」，第三方 namespace 刻意不在其中。写入仍然由主机端通过 profile patch 之下的同一个 settings scope 完成，且非本机的写入一律拒绝。
+这张卡片读写走本插件自己的 `/api/ccg/config` 路由。写入仍由主机端负责：DSH 0.2 通过 Settings 服务修改当前 profile entry 的 volatile 字段；旧版兼容范围使用插件自己的 settings scope。非本机写入一律拒绝。
 
 ## 手工配置
 
@@ -245,17 +245,11 @@ dsh --profile headless --patch ./cordis.dev.yml "你的任务"
       model: a-fast-model
 ```
 
-`provider` 指向你在 `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers` 里声明的路由。任何厂商 API 或 OpenAI 兼容网关都可以。
+`provider` 指向你在 **设置 › 模型** 中配置的路由（也可以在 profile 配置的 `llm-pi-ai.providers` 下配置）。任何厂商 API 或 OpenAI 兼容网关都可以。
 
-……或者写进 harness 的设置文档（`$DSH_HOME/settings.yaml`）——设置面板里「打开配置文件」打开的就是它，而且**改完实时生效、无需重启**：
+在 DSH 0.2 中，这张卡直接编辑当前 profile entry 并实时生效；无需在 `$DSH_HOME/settings.yaml` 中另建 `ccg:` 区段。
 
-```yaml
-ccg:
-  strong: { provider: my-gateway, model: a-reasoning-model }
-  worker: { provider: my-gateway, model: a-fast-model }
-```
-
-插件把 `ccg` 注册成了 settings namespace：profile patch 是合成基座，这一段是压在它上面的用户层。改动会先退掉当前这批角色工具，再原地注册新的一批。
+profile patch 仍是 CCG 有效配置的来源。旧版兼容范围仍接受原有插件专属 `ccg` settings 区段。
 
 单个角色的覆盖写在 `roles` 下：
 
@@ -295,7 +289,7 @@ ccg:
 
 ## 依赖要求
 
-- DeepSeek Harness `0.1.0-rc.6` 或更新（开发者预览版，插件 API 仍在变动）
+- 已在 DeepSeek Harness `0.1.0-rc.6`、`0.1.1-rc.2` 与 `0.2.1-alpha.1` 上测试。
 - 至少配置一个 provider 路由，且凭据已存进 harness（网页 **设置 › 模型** 页会写入）—— `apiKeyEnv` 没设的路由会在第一次请求时失败，而不是启动时
 - 人设需要 subagent provider 具备 `persona` 能力（默认的 `spawn` 具备）
 
