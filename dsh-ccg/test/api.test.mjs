@@ -161,16 +161,17 @@ test('role routing edits preserve inherited role settings under SettingsPathOps'
   const user = { roles: { builder: { models: [{ provider: 'old', model: 'old' }] } } }
   const patch = { roles: { builder: { models: [{ provider: 'gw', model: 'fast' }] } } }
   const section = nextUserSection(user, patch)
-  const raw = applySettingsPathOps(user, base, settingsOperations(section, patch))
-
-  assert.deepEqual(raw, {
-    roles: { builder: { models: [{ provider: 'gw', model: 'fast' }] } },
-  })
-  assert.deepEqual(mergeSettingsLayers(base, raw).roles, {
+  const current = mergeSettingsLayers(base, user)
+  const expected = {
     reviewer: { enabled: false, tier: 'strong' },
     builder: { toolName: 'build_special', tier: 'worker', models: [{ provider: 'gw', model: 'fast' }] },
     architect: { enabled: true, toolName: 'design_special' },
-  })
+  }
+  const updated = applySettingsPathOps(current, base, settingsOperations(section, patch))
+  assert.deepEqual(updated.roles, expected)
+
+  const oldWholeRolesWrite = [{ op: 'set', path: ['roles'], value: section.roles }]
+  assert.notDeepEqual(applySettingsPathOps(current, base, oldWholeRolesWrite).roles, expected)
 })
 
 test('role route writes clear only legacy single-pin fields that were present', () => {
